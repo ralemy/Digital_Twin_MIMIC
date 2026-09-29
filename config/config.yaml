@@ -1,0 +1,112 @@
+# =============================================================================
+# Configuration for the local, lean-scope MIMIC-IV digital twin experiment.
+# Matches Chapter 5 (Methods) of the dissertation proposal: tight 5-variable
+# panel, short horizon, fully local execution, no cloud / no external API.
+#
+# This file is sized for the original reference machine (11GB GTX 1080 Ti,
+# 32GB RAM) and is also the version already described to UVic's HREB
+# (dev-sized 300-patient cohort, sequential single-request LLM calls). If
+# you're now on a bigger single machine (e.g. ~40GB GPU, ~400GB RAM, 24+
+# CPU cores), use config/config_highend.yaml instead — same design, same
+# variable panel, just sized to actually use that hardware (larger/full
+# cohort, a stronger local model, concurrent LLM requests, GPU-batched LSTM
+# baseline). See README.md, "Scaling up on better hardware".
+# =============================================================================
+
+paths:
+  mimic_root: "~/mimic-iv"        # expects ~/mimic-iv/hosp and ~/mimic-iv/icu (raw PhysioNet export, .csv.gz)
+  work_dir: "~/mimic-iv-twin-work" # all derived/intermediate/output files go here (create if missing)
+  cache_dir: "~/mimic-iv-twin-work/cache"
+  results_dir: "~/mimic-iv-twin-work/results"
+
+cohort:
+  min_age_years: 18
+  min_icu_stay_hours: 48
+  first_stay_only: true            # first ICU stay per patient, avoids within-patient leakage
+  min_panel_coverage: 0.5          # exclude patients with <50% of panel measurements populated
+  observation_window_hours: 24     # hours of history given to the forecaster
+  forecast_horizon_hours: 24       # hours ahead being forecast
+  resample_freq_minutes: 60        # panel is resampled to hourly bins
+  train_frac: 0.7
+  val_frac: 0.15
+  test_frac: 0.15
+  random_seed: 42
+  # Set to an integer to subsample the eligible cohort for a fast smoke-test run,
+  # or null to use the full eligible cohort.
+  max_patients: 300
+
+# Tight variable panel (Chapter 5, Section 5.4 / Appendix A). Item labels are
+# resolved dynamically against d_items.csv.gz / d_labitems.csv.gz rather than
+# hardcoded itemids, then cached — see src/resolve_items.py.
+variables:
+  - name: heart_rate
+    source: icu_chartevents
+    label_patterns: ["Heart Rate"]
+    plausible_range: [20, 250]     # beats per minute
+    unit: "bpm"
+  - name: resp_rate
+    source: icu_chartevents
+    label_patterns: ["Respiratory Rate"]
+    exclude_patterns: ["Set", "Spontaneous", "Total"]
+    plausible_range: [4, 60]
+    unit: "breaths/min"
+  - name: spo2
+    source: icu_chartevents
+    label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
+    plausible_range: [50, 100]
+    unit: "%"
+  - name: map
+    source: icu_chartevents
+    label_patterns: ["Arterial Blood Pressure mean", "Non Invasive Blood Pressure mean", "ART BP Mean"]
+    plausible_range: [20, 180]
+    unit: "mmHg"
+  - name: lactate
+    source: hosp_labevents
+    label_patterns: ["Lactate"]
+    exclude_patterns: ["CSF"]
+    plausible_range: [0.1, 30]
+    unit: "mmol/L"
+
+deterioration_labels:
+  # Used to build the "deteriorating" subgroup for RQ3 (Chapter 5, Section 5.5, step 5).
+  vasopressor_itemid_labels: ["Norepinephrine", "Epinephrine", "Vasopressin", "Phenylephrine", "Dopamine"]
+  lookahead_hours: 24              # window after the observation cutoff in which a deterioration event counts
+
+llm:
+  backend: "ollama"                # "ollama" (recommended) or "llama_cpp"
+  ollama_host: "http://127.0.0.1:11434"
+  model: "llama3.1:8b-instruct-q4_K_M"   # any local, quantized, open-weight instruct model works
+  temperature: 0.2
+  max_tokens: 400
+  request_timeout_s: 120
+  num_ctx: 4096
+
+similarity_agent:
+  k_neighbors: 20
+  feature_hours: 24                # uses the same observation window as the forecaster
+
+critic_agent:
+  enabled: true
+  max_correction_attempts: 1       # one bounded correction round, per Chapter 5's control-loop framing
+
+baselines:
+  run_naive: true
+  run_gbm: true
+  run_lstm: true
+  run_single_model_llm: true       # DT-GPT-style: same LLM, no similarity conditioning, no critic
+
+conditions:
+  # Order matters for reporting only.
+  - naive
+  - gbm
+  - lstm
+  - single_model_llm
+  - full_pipeline
+  # Ablations isolating orchestration's contribution (RQ1/RQ2):
+  - full_pipeline_no_critic
+  - full_pipeline_no_similarity
+
+evaluation:
+  bootstrap_resamples: 2000
+  bootstrap_alpha: 0.05
+  interval_width_pct: 90           # width of the plausibility/coverage interval, in percent

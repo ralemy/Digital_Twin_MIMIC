@@ -1,0 +1,137 @@
+# =============================================================================
+# Same 5-variable panel as config.yaml / config_highend.yaml — the version
+# already described to UVic's HREB — sized to run as a Slurm batch job on
+# Nibi (Digital Research Alliance of Canada), one H100 80GB GPU allocation,
+# instead of on a local machine. Paired with jobs/run_lean_nibi.sh.
+#
+# Differences from config_highend.yaml are ONLY: paths (use $PROJECT/$SCRATCH,
+# which only exist inside an Alliance job/login environment — this file will
+# NOT load correctly outside one) and performance.duckdb_threads /
+# llm_max_concurrent_requests (capped to Nibi's documented "no more than 14
+# CPU cores per GPU" guideline, not the 24-core local machine's number).
+# Nothing about the model, cohort criteria, variable panel, or conditions
+# differs from config_highend.yaml — this is the same experiment, same
+# scope already represented to the Board, on different infrastructure.
+#
+# IMPORTANT — read before submitting a job with this file:
+#   1. MIMIC-IV DUA / data custody: confirm that Nibi's storage meets
+#      PhysioNet's Data Use Agreement requirements for where credentialed
+#      data may be stored before uploading anything here. This file assumes
+#      that's been checked; it isn't this file's job to check it for you.
+#   2. The CPU/GPU/RAM numbers below (cpus-per-task, mem, duckdb_threads)
+#      are conservative starting points based on Nibi's public "no more
+#      than 14 CPU cores per GPU" guidance, not a confirmed per-node spec
+#      sheet (Nibi's own wiki page was not reachable while preparing this
+#      file). Check `sinfo -o "%N %c %m %G"` on Nibi once you have an
+#      account session, and raise these if a full node's worth is actually
+#      available to a single-GPU job.
+#   3. Ollama itself must already be running on 127.0.0.1:11434 before the
+#      Python steps run — jobs/run_lean_nibi.sh starts it. This config does
+#      not start Ollama; it only talks to it.
+# =============================================================================
+
+paths:
+  # $PROJECT persists (unlike $SCRATCH, purged after 60 days of inactivity)
+  # — appropriate for MIMIC-IV itself and for results you need to keep for
+  # the dissertation. Update mimic_root if you placed the data somewhere
+  # else under your project space.
+  mimic_root: "$PROJECT/mimic-iv"
+  work_dir: "$PROJECT/mimic-iv-twin-work"
+  cache_dir: "$PROJECT/mimic-iv-twin-work/cache"
+  results_dir: "$PROJECT/mimic-iv-twin-work/results"
+
+performance:
+  # Nibi's own guidance is "no more than 14 CPU cores" per GPU requested —
+  # jobs/run_lean_nibi.sh requests --cpus-per-task=12, leaving 2 cores of
+  # headroom under that ceiling for Slurm/OS overhead rather than requesting
+  # right up against the documented limit.
+  duckdb_threads: 10
+  duckdb_memory_limit_gb: 200      # conservative fraction of a shared node's RAM — see note 2 above; raise once confirmed
+  llm_max_concurrent_requests: 4   # must match OLLAMA_NUM_PARALLEL in jobs/run_lean_nibi.sh
+  batch_predict_baselines: true
+
+cohort:
+  min_age_years: 18
+  min_icu_stay_hours: 48
+  first_stay_only: true
+  min_panel_coverage: 0.5
+  observation_window_hours: 24
+  forecast_horizon_hours: 24
+  resample_freq_minutes: 60
+  train_frac: 0.7
+  val_frac: 0.15
+  test_frac: 0.15
+  random_seed: 42
+  max_patients: 3000               # same starting point as config_highend.yaml; set to null once timed
+
+variables:
+  - name: heart_rate
+    source: icu_chartevents
+    label_patterns: ["Heart Rate"]
+    plausible_range: [20, 250]
+    unit: "bpm"
+  - name: resp_rate
+    source: icu_chartevents
+    label_patterns: ["Respiratory Rate"]
+    exclude_patterns: ["Set", "Spontaneous", "Total"]
+    plausible_range: [4, 60]
+    unit: "breaths/min"
+  - name: spo2
+    source: icu_chartevents
+    label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
+    plausible_range: [50, 100]
+    unit: "%"
+  - name: map
+    source: icu_chartevents
+    label_patterns: ["Arterial Blood Pressure mean", "Non Invasive Blood Pressure mean", "ART BP Mean"]
+    plausible_range: [20, 180]
+    unit: "mmHg"
+  - name: lactate
+    source: hosp_labevents
+    label_patterns: ["Lactate"]
+    exclude_patterns: ["CSF"]
+    plausible_range: [0.1, 30]
+    unit: "mmol/L"
+
+deterioration_labels:
+  vasopressor_itemid_labels: ["Norepinephrine", "Epinephrine", "Vasopressin", "Phenylephrine", "Dopamine"]
+  lookahead_hours: 24
+
+llm:
+  backend: "ollama"
+  ollama_host: "http://127.0.0.1:11434"
+  model: "qwen2.5:32b-instruct-q8_0"   # ~34GB weights — comfortable on an 80GB H100, same model as config_highend.yaml
+  temperature: 0.2
+  max_tokens: 600
+  request_timeout_s: 180
+  num_ctx: 8192
+
+similarity_agent:
+  k_neighbors: 30
+  feature_hours: 24
+
+critic_agent:
+  enabled: true
+  max_correction_attempts: 1
+
+baselines:
+  run_naive: true
+  run_gbm: true
+  run_lstm: true
+  run_single_model_llm: true
+  lstm_hidden_size: 128
+  lstm_epochs: 200
+
+conditions:
+  - naive
+  - gbm
+  - lstm
+  - single_model_llm
+  - full_pipeline
+  - full_pipeline_no_critic
+  - full_pipeline_no_similarity
+
+evaluation:
+  bootstrap_resamples: 2000
+  bootstrap_alpha: 0.05
+  interval_width_pct: 90

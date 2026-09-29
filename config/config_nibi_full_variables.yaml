@@ -1,0 +1,198 @@
+# =============================================================================
+# ALTERNATE SCOPE — NOT what has been described to UVic's HREB. See the
+# same warning in config/config_highend_full_variables.yaml; it applies
+# here unchanged. This is that same 19-variable panel, sized to run as a
+# Slurm batch job on Nibi instead of on a local machine. Paired with
+# jobs/run_full_nibi.sh.
+#
+# Do not run this against real MIMIC-IV data until a deliberate decision
+# has been made to expand the panel and an amendment has been submitted
+# to and approved by the Board. As of this version, that has not happened.
+#
+# Differences from config_nibi_lean.yaml: the variable panel (19 vs 5),
+# llm.max_tokens/num_ctx (longer JSON output and prompt), and work_dir
+# (separate from the lean job's, so the two never collide on $PROJECT).
+# Same cluster/hardware caveats as config_nibi_lean.yaml apply — read
+# that file's header comments too.
+# =============================================================================
+
+paths:
+  mimic_root: "$PROJECT/mimic-iv"
+  work_dir: "$PROJECT/mimic-iv-twin-work-full"
+  cache_dir: "$PROJECT/mimic-iv-twin-work-full/cache"
+  results_dir: "$PROJECT/mimic-iv-twin-work-full/results"
+
+performance:
+  duckdb_threads: 10
+  duckdb_memory_limit_gb: 200
+  llm_max_concurrent_requests: 4
+  batch_predict_baselines: true
+
+cohort:
+  min_age_years: 18
+  min_icu_stay_hours: 48
+  first_stay_only: true
+  # 19 variables means a smaller eligible cohort passes the 50% coverage
+  # filter than under the 5-variable panel — see config_highend_full_variables.yaml's
+  # note on this. Expect fewer than 3000 eligible patients before max_patients
+  # even applies.
+  min_panel_coverage: 0.5
+  observation_window_hours: 24
+  forecast_horizon_hours: 24
+  resample_freq_minutes: 60
+  train_frac: 0.7
+  val_frac: 0.15
+  test_frac: 0.15
+  random_seed: 42
+  max_patients: 3000
+
+variables:
+  - name: heart_rate
+    source: icu_chartevents
+    label_patterns: ["Heart Rate"]
+    plausible_range: [20, 250]
+    unit: "bpm"
+  - name: resp_rate
+    source: icu_chartevents
+    label_patterns: ["Respiratory Rate"]
+    exclude_patterns: ["Set", "Spontaneous", "Total"]
+    plausible_range: [4, 60]
+    unit: "breaths/min"
+  - name: spo2
+    source: icu_chartevents
+    label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
+    plausible_range: [50, 100]
+    unit: "%"
+  - name: map
+    source: icu_chartevents
+    label_patterns: ["Arterial Blood Pressure mean", "Non Invasive Blood Pressure mean", "ART BP Mean"]
+    plausible_range: [20, 180]
+    unit: "mmHg"
+  - name: lactate
+    source: hosp_labevents
+    label_patterns: ["Lactate"]
+    exclude_patterns: ["CSF"]
+    plausible_range: [0.1, 30]
+    unit: "mmol/L"
+  # --- added vitals (icu/chartevents) ---
+  - name: sbp
+    source: icu_chartevents
+    label_patterns: ["Non Invasive Blood Pressure systolic", "Arterial Blood Pressure systolic", "ART BP Systolic"]
+    plausible_range: [40, 250]
+    unit: "mmHg"
+  - name: dbp
+    source: icu_chartevents
+    label_patterns: ["Non Invasive Blood Pressure diastolic", "Arterial Blood Pressure diastolic", "ART BP Diastolic"]
+    plausible_range: [20, 150]
+    unit: "mmHg"
+  - name: temperature
+    source: icu_chartevents
+    label_patterns: ["Temperature Fahrenheit"]
+    plausible_range: [86, 110]
+    unit: "°F"
+  # --- added labs (hosp/labevents) ---
+  - name: creatinine
+    source: hosp_labevents
+    label_patterns: ["Creatinine"]
+    exclude_patterns: ["Urine", "Ascites", "Body Fluid", "Pleural", "Joint Fluid"]
+    plausible_range: [0.1, 20]
+    unit: "mg/dL"
+  - name: bun
+    source: hosp_labevents
+    label_patterns: ["Urea Nitrogen"]
+    exclude_patterns: ["Urine"]
+    plausible_range: [1, 200]
+    unit: "mg/dL"
+  - name: sodium
+    source: hosp_labevents
+    label_patterns: ["Sodium"]
+    exclude_patterns: ["Urine"]
+    plausible_range: [100, 180]
+    unit: "mEq/L"
+  - name: potassium
+    source: hosp_labevents
+    label_patterns: ["Potassium"]
+    exclude_patterns: ["Urine"]
+    plausible_range: [1.5, 9]
+    unit: "mEq/L"
+  - name: wbc
+    source: hosp_labevents
+    label_patterns: ["White Blood Cells"]
+    plausible_range: [0.1, 100]
+    unit: "K/uL"
+  - name: platelet
+    source: hosp_labevents
+    label_patterns: ["Platelet Count"]
+    plausible_range: [1, 1200]
+    unit: "K/uL"
+  - name: hemoglobin
+    source: hosp_labevents
+    label_patterns: ["Hemoglobin"]
+    exclude_patterns: ["Urine"]
+    plausible_range: [2, 22]
+    unit: "g/dL"
+  - name: bicarbonate
+    source: hosp_labevents
+    label_patterns: ["Bicarbonate"]
+    plausible_range: [5, 50]
+    unit: "mEq/L"
+  - name: glucose
+    source: hosp_labevents
+    label_patterns: ["Glucose"]
+    exclude_patterns: ["Urine", "CSF", "Body Fluid"]
+    plausible_range: [10, 1000]
+    unit: "mg/dL"
+  - name: bilirubin_total
+    source: hosp_labevents
+    label_patterns: ["Bilirubin, Total"]
+    plausible_range: [0.1, 50]
+    unit: "mg/dL"
+  - name: ph
+    source: hosp_labevents
+    label_patterns: ["pH"]
+    exclude_patterns: ["Urine"]
+    plausible_range: [6.8, 7.8]
+    unit: ""
+
+deterioration_labels:
+  vasopressor_itemid_labels: ["Norepinephrine", "Epinephrine", "Vasopressin", "Phenylephrine", "Dopamine"]
+  lookahead_hours: 24
+
+llm:
+  backend: "ollama"
+  ollama_host: "http://127.0.0.1:11434"
+  model: "qwen2.5:32b-instruct-q8_0"
+  temperature: 0.2
+  max_tokens: 1800
+  request_timeout_s: 240
+  num_ctx: 12288
+
+similarity_agent:
+  k_neighbors: 30
+  feature_hours: 24
+
+critic_agent:
+  enabled: true
+  max_correction_attempts: 1
+
+baselines:
+  run_naive: true
+  run_gbm: true
+  run_lstm: true
+  run_single_model_llm: true
+  lstm_hidden_size: 128
+  lstm_epochs: 200
+
+conditions:
+  - naive
+  - gbm
+  - lstm
+  - single_model_llm
+  - full_pipeline
+  - full_pipeline_no_critic
+  - full_pipeline_no_similarity
+
+evaluation:
+  bootstrap_resamples: 2000
+  bootstrap_alpha: 0.05
+  interval_width_pct: 90
