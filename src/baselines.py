@@ -14,6 +14,8 @@ if available, i.e. the 1080 Ti) with no external services.
 """
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
 
@@ -27,10 +29,12 @@ log = get_logger("baselines")
 # environment where torch isn't installed / isn't wanted.
 try:
     import torch
-    import torch.nn as nn
+    from torch import nn
     _TORCH_AVAILABLE = True
 except ImportError:
     _TORCH_AVAILABLE = False
+    nn = MagicMock()
+    torch = MagicMock()
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +83,7 @@ class GBMBaseline:
         self.models: dict[tuple[str, int], HistGradientBoostingRegressor] = {}
         self.residual_std: dict[tuple[str, int], float] = {}
 
-    def fit(self, train_tensors: dict[int, dict]) -> "GBMBaseline":
+    def fit(self, train_tensors: dict[int, dict]) -> GBMBaseline:
         X = np.stack([_summary_features(t["obs"], self.variables) for t in train_tensors.values()])
         for v_idx, var in enumerate(self.variables):
             for h in range(self.horizon_hours):
@@ -118,7 +122,7 @@ class GBMBaseline:
 
 if _TORCH_AVAILABLE:
 
-    class _Seq2SeqLSTM(nn.Module):
+    class _Seq2SeqLSTM(nn.Module): # type: ignore
         def __init__(self, n_vars: int, hidden: int = 64, horizon_hours: int = 24):
             super().__init__()
             self.encoder = nn.LSTM(input_size=n_vars, hidden_size=hidden, batch_first=True)
@@ -127,7 +131,7 @@ if _TORCH_AVAILABLE:
             self.horizon_hours = horizon_hours
             self.n_vars = n_vars
 
-        def forward(self, obs: "torch.Tensor") -> "torch.Tensor":
+        def forward(self, obs: torch.Tensor) -> torch.Tensor: # type: ignore
             _, (h, c) = self.encoder(obs)
             # teacher-forcing-free autoregressive decode, seeded with the last observed step
             dec_input = obs[:, -1:, :]
@@ -156,11 +160,11 @@ class LSTMBaseline:
         self._norm_mean = None
         self._norm_std = None
 
-    def _to_tensor(self, arr: np.ndarray) -> torch.Tensor:
+    def _to_tensor(self, arr: np.ndarray) -> torch.Tensor: # type: ignore
         filled = np.nan_to_num(arr, nan=0.0)
         return torch.tensor(filled, dtype=torch.float32)
 
-    def fit(self, train_tensors: dict[int, dict], epochs: int = 100, lr: float = 1e-3) -> "LSTMBaseline":
+    def fit(self, train_tensors: dict[int, dict], epochs: int = 100, lr: float = 1e-3) -> LSTMBaseline:
         obs_stack = np.stack([t["obs"] for t in train_tensors.values()])
         hor_stack = np.stack([t["horizon"] for t in train_tensors.values()])
 

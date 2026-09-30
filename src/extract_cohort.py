@@ -31,7 +31,15 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from common import load_config, ensure_work_dirs, get_logger, hosp_dir, icu_dir, require_mimic_layout, get_duckdb_connection
+from common import (
+    ensure_work_dirs,
+    get_duckdb_connection,
+    get_logger,
+    hosp_dir,
+    icu_dir,
+    load_config,
+    require_mimic_layout,
+)
 
 log = get_logger("extract_cohort")
 
@@ -101,7 +109,7 @@ def cache_panel_raw(con: duckdb.DuckDBPyConnection, cfg: dict, eligible_stays: p
 
     chart_itemids = []
     lab_itemids = []
-    for var, info in item_mapping.items():
+    for info in item_mapping.values():
         if info["source"] == "icu_chartevents":
             chart_itemids.extend(info["itemids"])
         elif info["source"] == "hosp_labevents":
@@ -261,7 +269,7 @@ def resample_and_filter(cfg: dict, eligible_stays: pd.DataFrame, item_mapping: d
 
 def assign_splits(cohort: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     c = cfg["cohort"]
-    rng = np.random.RandomState(c["random_seed"])
+#    rng = np.random.RandomState(c["random_seed"])
     ids = cohort["stay_id"].sample(frac=1.0, random_state=c["random_seed"]).tolist()
     n = len(ids)
     n_train = int(n * c["train_frac"])

@@ -21,7 +21,15 @@ from pathlib import Path
 
 import duckdb
 
-from common import load_config, ensure_work_dirs, get_logger, hosp_dir, icu_dir, require_mimic_layout, get_duckdb_connection
+from common import (
+    ensure_work_dirs,
+    get_duckdb_connection,
+    get_logger,
+    hosp_dir,
+    icu_dir,
+    load_config,
+    require_mimic_layout,
+)
 
 log = get_logger("resolve_items")
 
@@ -36,7 +44,7 @@ def _find_file(directory: Path, stem: str) -> Path:
 
 
 def resolve_icu_item(con: duckdb.DuckDBPyConnection, d_items_path: Path, patterns: list[str], excludes: list[str]) -> list[dict]:
-    like_clauses = " OR ".join([f"label ILIKE '%' || ? || '%'" for _ in patterns])
+    like_clauses = " OR ".join(["label ILIKE '%' || ? || '%'" for _ in patterns])
     query = f"""
         SELECT itemid, label, category, param_type, unitname
         FROM read_csv_auto(?, ignore_errors=true)
@@ -55,7 +63,7 @@ def resolve_icu_item(con: duckdb.DuckDBPyConnection, d_items_path: Path, pattern
 
 
 def resolve_lab_item(con: duckdb.DuckDBPyConnection, d_labitems_path: Path, patterns: list[str], excludes: list[str]) -> list[dict]:
-    like_clauses = " OR ".join([f"label ILIKE '%' || ? || '%'" for _ in patterns])
+    like_clauses = " OR ".join(["label ILIKE '%' || ? || '%'" for _ in patterns])
     query = f"""
         SELECT itemid, label, fluid, category
         FROM read_csv_auto(?, ignore_errors=true)

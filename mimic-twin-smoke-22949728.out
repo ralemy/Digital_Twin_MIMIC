@@ -1,0 +1,1 @@
+/var/spool/slurmd/job22949728/slurm_script: line 27: AGENTIC_DT_PRJ: AGENTIC_DT_PRJ is not set — export it to the project directory before sbatch, e.g. export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1

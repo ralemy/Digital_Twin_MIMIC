@@ -20,10 +20,10 @@ Dependencies: numpy, scipy (for the KS test). Both are standard in a data-analys
 
 from __future__ import annotations
 
-import numpy as np
-from scipy.stats import ks_2samp
 from dataclasses import dataclass, field
 
+import numpy as np
+from scipy.stats import ks_2samp
 
 # ---------------------------------------------------------------------------
 # 1. Point-forecast accuracy
@@ -108,7 +108,7 @@ def marginal_ks_test(
             out[name] = {"ks_statistic": np.nan, "p_value": np.nan}
             continue
         stat, p = ks_2samp(yt, yp)
-        out[name] = {"ks_statistic": float(stat), "p_value": float(p)}
+        out[name] = {"ks_statistic": float(stat), "p_value": float(p)} # type: ignore
     return out
 
 
@@ -134,7 +134,7 @@ def cross_variable_correlation_preservation(
     yt_flat, yp_flat = yt_flat[valid], yp_flat[valid]
 
     if yt_flat.shape[0] < 2:
-        return {"true_corr": None, "pred_corr": None, "frobenius_diff": np.nan}
+        return {"true_corr": None, "pred_corr": None, "frobenius_diff": np.nan} # type: ignore
 
     true_corr = np.corrcoef(yt_flat, rowvar=False)
     pred_corr = np.corrcoef(yp_flat, rowvar=False)
@@ -144,7 +144,7 @@ def cross_variable_correlation_preservation(
         "true_corr": true_corr,
         "pred_corr": pred_corr,
         "frobenius_diff": frob_diff,
-        "variable_names": variable_names,
+        "variable_names": variable_names, # type: ignore
     }
 
 

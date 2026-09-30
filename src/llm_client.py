@@ -18,6 +18,7 @@ import json
 import time
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from common import get_logger
 
@@ -48,7 +49,7 @@ class LocalLLM:
         # pipeline (e.g. cohort extraction, GBM/LSTM training).
         pool_size = max(1, int(cfg.get("performance", {}).get("llm_max_concurrent_requests", 1)))
         self._session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size)
+        adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size)
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)
 

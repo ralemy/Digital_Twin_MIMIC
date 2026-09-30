@@ -47,7 +47,7 @@ class SimilarityAgent:
         self.train_stay_ids: list[int] = []
         self.train_horizons: dict[int, np.ndarray] = {}
 
-    def fit(self, train_tensors: dict[int, dict]) -> "SimilarityAgent":
+    def fit(self, train_tensors: dict[int, dict]) -> SimilarityAgent:
         feats, ids = [], []
         for stay_id, t in train_tensors.items():
             fv = _feature_vector(t["obs"], self.variables)
@@ -75,9 +75,9 @@ class SimilarityAgent:
         col_means = self.scaler.mean_
         inds = np.where(np.isnan(fv))
         if len(inds[0]) > 0:
-            fv[inds] = np.take(col_means, inds[1])
+            fv[inds] = np.take(col_means, inds[1]) # type: ignore
         fv_scaled = self.scaler.transform(fv)
-        dist, idx = self.nn.kneighbors(fv_scaled)
+        dist, idx = self.nn.kneighbors(fv_scaled) # type: ignore
         neighbor_ids = [self.train_stay_ids[i] for i in idx[0]]
         neighbor_horizons = np.stack([self.train_horizons[i] for i in neighbor_ids])  # (k, hor_h, n_var)
         cohort_mean_trajectory = np.nanmean(neighbor_horizons, axis=0)  # (hor_h, n_var)

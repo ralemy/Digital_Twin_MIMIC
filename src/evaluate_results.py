@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 
-from common import load_config, get_logger
+from common import get_logger, load_config
 from metrics import smape
 
 log = get_logger("evaluate_results")
@@ -92,8 +92,8 @@ def compare_conditions(name_a: str, name_b: str, data_a: dict, data_b: dict, cfg
         "n_paired_patients": int(mask.sum()),
         f"{name_a}_smape_mean": mean_a, f"{name_a}_smape_ci95": [lo_a, hi_a],
         f"{name_b}_smape_mean": mean_b, f"{name_b}_smape_ci95": [lo_b, hi_b],
-        "wilcoxon_statistic": float(stat) if not np.isnan(stat) else None,
-        "wilcoxon_pvalue": float(pval) if not np.isnan(pval) else None,
+        "wilcoxon_statistic": float(stat) if not np.isnan(stat) else None, # type: ignore
+        "wilcoxon_pvalue": float(pval) if not np.isnan(pval) else None, # type: ignore
     }
 
 
@@ -134,7 +134,7 @@ def rq3_subgroup_analysis(cfg: dict, results_dir: Path) -> dict | None:
     log.info("RQ3: %d / %d test-eligible stays flagged deteriorating (new vasopressor in horizon window).",
               len(deteriorating_ids), cohort["stay_id"].nunique())
 
-    variables = [v["name"] for v in cfg["variables"]]
+    # _ = [v["name"] for v in cfg["variables"]]
     subgroup_results = {}
     for condition in ("single_model_llm", "full_pipeline"):
         data = load_raw(results_dir, condition)

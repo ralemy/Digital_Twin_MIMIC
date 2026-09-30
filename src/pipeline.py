@@ -12,12 +12,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from baselines import GBMBaseline, LSTMBaseline, naive_forecast
 from common import get_logger
-from baselines import naive_forecast, GBMBaseline, LSTMBaseline
-from similarity_agent import SimilarityAgent
-from forecasting_agent import ForecastingAgent
 from critic_agent import CriticAgent
+from forecasting_agent import ForecastingAgent
 from llm_client import LocalLLM
+from similarity_agent import SimilarityAgent
 
 log = get_logger("pipeline")
 
@@ -70,28 +70,28 @@ def run_condition(
         # sklearn's HistGradientBoostingRegressor.predict is CPU-vectorized
         # internally; looping per patient is already fast enough at lean-scope
         # cohort sizes that batching here wouldn't meaningfully help.
-        model: GBMBaseline = fitted_models["gbm"]
+        gbm_model: GBMBaseline = fitted_models["gbm"]
         for pi, sid in enumerate(stay_ids):
-            r = model.predict(test_tensors[sid]["obs"])
+            r = gbm_model.predict(test_tensors[sid]["obs"])
             y_pred[pi] = r["forecast_array"]
             y_lower[pi] = r["forecast_array"] - r["halfwidth_array"][None, :]
             y_upper[pi] = r["forecast_array"] + r["halfwidth_array"][None, :]
 
     elif condition == "lstm":
-        model: LSTMBaseline = fitted_models["lstm"]
-        if cfg.get("performance", {}).get("batch_predict_baselines", False) and hasattr(model, "predict_batch"):
+        lstm_model: LSTMBaseline = fitted_models["lstm"]
+        if cfg.get("performance", {}).get("batch_predict_baselines", False) and hasattr(lstm_model, "predict_batch"):
             # One batched forward pass on the GPU instead of one Python-level
             # call per patient — this is where a 40GB card actually pays off
             # for the LSTM baseline at larger cohort sizes; a single-patient
             # forward pass barely uses the GPU at all.
             obs_stack = np.stack([test_tensors[sid]["obs"] for sid in stay_ids])
-            batch = model.predict_batch(obs_stack)
+            batch = lstm_model.predict_batch(obs_stack)
             y_pred[:] = batch["forecast_array"]
             y_lower[:] = batch["forecast_array"] - batch["halfwidth_array"][:, None, :]
             y_upper[:] = batch["forecast_array"] + batch["halfwidth_array"][:, None, :]
         else:
             for pi, sid in enumerate(stay_ids):
-                r = model.predict(test_tensors[sid]["obs"])
+                r = lstm_model.predict(test_tensors[sid]["obs"])
                 y_pred[pi] = r["forecast_array"]
                 y_lower[pi] = r["forecast_array"] - r["halfwidth_array"][None, :]
                 y_upper[pi] = r["forecast_array"] + r["halfwidth_array"][None, :]

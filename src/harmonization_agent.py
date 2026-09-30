@@ -14,12 +14,11 @@ function by pipeline.py.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
+# from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from common import load_config, get_logger
+from common import get_logger  #, load_config
 
 log = get_logger("harmonization_agent")
 
@@ -40,7 +39,7 @@ def _pivot_stay(panel_stay: pd.DataFrame, total_hours: int, variables: list[str]
 def _interpolate_short_gaps(arr: np.ndarray, max_gap_hours: int = 3) -> np.ndarray:
     """Linearly interpolate gaps up to max_gap_hours; longer gaps stay NaN."""
     out = arr.copy()
-    n_hours, n_vars = arr.shape
+    _, n_vars = arr.shape
     for v in range(n_vars):
         series = pd.Series(out[:, v])
         interpolated = series.interpolate(method="linear", limit=max_gap_hours, limit_area="inside")
@@ -91,6 +90,6 @@ def summarize_observation(obs: np.ndarray, variables: list[str]) -> dict[str, di
             "mean": float(np.mean(valid)),
             "std": float(np.std(valid)) if len(valid) > 1 else 0.0,
             "slope": slope,
-            "n_obs": int(len(valid)),
+            "n_obs": len(valid),
         }
     return summary
