@@ -4,6 +4,7 @@ No cloud, no network calls except to the local Ollama server (127.0.0.1).
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
@@ -11,8 +12,26 @@ from pathlib import Path
 
 import yaml
 
+DEFAULT_CONFIG_PATH = "config/config.yaml"
 
-def load_config(config_path: str = "config/config.yaml") -> dict:
+
+def parse_step_args(description: str | None = None) -> argparse.Namespace:
+    """Common CLI for every step script. `--config` is kept as an alias of
+    `--config-file` so existing job scripts and commands keep working."""
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument(
+        "--config-file", "--config",
+        dest="config_file",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"path to the YAML config file (default: {DEFAULT_CONFIG_PATH})",
+    )
+    args = parser.parse_args()
+    if not Path(args.config_file).is_file():
+        parser.error(f"config file not found: {args.config_file}")
+    return args
+
+
+def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
 

@@ -99,7 +99,7 @@ if ! ollama list | grep -q "$MODEL"; then
 fi
 
 echo "== step 3/4: run_experiment.py =="
-python src/run_experiment.py --config "$CONFIG"
+python src/run_experiment.py --config-file "$CONFIG"
 
 echo "== job $SLURM_JOB_ID finished at $(date) =="
 # `trap cleanup EXIT` stops ollama on the way out, success or failure.

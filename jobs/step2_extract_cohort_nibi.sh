@@ -50,6 +50,6 @@ module load python/3.11
 source "$PROJECT_DIR/.venv/bin/activate"
 
 echo "== step 2/4: extract_cohort.py =="
-python src/extract_cohort.py --config "$CONFIG"
+python src/extract_cohort.py --config-file "$CONFIG"
 
 echo "== job $SLURM_JOB_ID finished at $(date) =="

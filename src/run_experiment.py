@@ -7,11 +7,11 @@ configured condition over the held-out test split, and writes raw forecast
 arrays + a per-condition metrics summary to <results_dir>.
 
 Usage:
-    python src/run_experiment.py --config config/config.yaml
+    python src/run_experiment.py --config-file config/config.yaml
 
 Prerequisites:
-    1. python src/resolve_items.py --config config/config.yaml
-    2. python src/extract_cohort.py --config config/config.yaml
+    1. python src/resolve_items.py --config-file config/config.yaml
+    2. python src/extract_cohort.py --config-file config/config.yaml
     3. Ollama running locally with the configured model pulled
        (skip step 3 and set baselines.run_single_model_llm: false and drop
        full_pipeline* from `conditions` in config.yaml if you only want to
@@ -19,13 +19,12 @@ Prerequisites:
 """
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from common import ensure_work_dirs, get_logger, load_config
+from common import ensure_work_dirs, get_logger, load_config, parse_step_args
 from harmonization_agent import build_tensors
 from metrics import evaluate_twin
 from pipeline import fit_models, run_condition
@@ -108,11 +107,10 @@ def main(config_path: str) -> None:
 
     pd.DataFrame(summary_rows).to_csv(results_dir / "all_conditions_summary.csv", index=False)
     log.info("All conditions complete. Combined summary: %s", results_dir / "all_conditions_summary.csv")
-    log.info("Next step: python src/evaluate_results.py --config %s", config_path)
+    log.info("Next step: python src/evaluate_results.py --config-file %s", config_path)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config/config.yaml")
-    args = parser.parse_args()
-    main(args.config)
+    doc = __doc__ or "Main entry point — Chapter 5, Section 5.5, steps 2-4."
+    args = parse_step_args(doc.strip().splitlines()[0])
+    main(args.config_file)

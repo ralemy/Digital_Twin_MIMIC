@@ -18,12 +18,11 @@ Outputs (written under <work_dir>):
   panel_long.parquet                long-format (stay_id, variable, hour, value) resampled panel
 
 Usage:
-    python src/extract_cohort.py --config config/config.yaml
+    python src/extract_cohort.py --config-file config/config.yaml
 Requires resolve_items.py to have been run first (needs cache/item_mapping.json).
 """
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -38,6 +37,7 @@ from common import (
     hosp_dir,
     icu_dir,
     load_config,
+    parse_step_args,
     require_mimic_layout,
 )
 
@@ -316,7 +316,6 @@ def main(config_path: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config/config.yaml")
-    args = parser.parse_args()
-    main(args.config)
+    doc= __doc__ or "Build analytic cohort and extract tight variable panel from MIMIC-IV."
+    args = parse_step_args(doc.strip().splitlines()[0])
+    main(args.config_file)

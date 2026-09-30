@@ -16,12 +16,11 @@ resampling PATIENTS (not individual observations) with replacement, per
 Section 5.6.
 
 Usage:
-    python src/evaluate_results.py --config config/config.yaml
+    python src/evaluate_results.py --config-file config/config.yaml
 Requires run_experiment.py to have been run first (reads <results_dir>/*_raw.npz).
 """
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -29,7 +28,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 
-from common import get_logger, load_config
+from common import get_logger, load_config, parse_step_args
 from metrics import smape
 
 log = get_logger("evaluate_results")
@@ -199,7 +198,6 @@ def main(config_path: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config/config.yaml")
-    args = parser.parse_args()
-    main(args.config)
+    doc = __doc__ or "Statistical analysis — Chapter 5, Section 5.6."
+    args = parse_step_args(doc.strip().splitlines()[0])
+    main(args.config_file)

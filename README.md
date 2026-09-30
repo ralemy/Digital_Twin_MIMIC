@@ -50,7 +50,7 @@ work — much cheaper to find out now than after a multi-hour extraction.
 ## 2. Resolve the variable panel to real itemids
 
 ```bash
-python src/resolve_items.py --config config/config.yaml
+python src/resolve_items.py --config-file config/config.yaml
 ```
 
 Writes `~/mimic-iv-twin-work/cache/item_mapping.json`. **Open and read this
@@ -65,7 +65,7 @@ drop or add an itemid.
 ## 3. Extract the cohort and panel
 
 ```bash
-python src/extract_cohort.py --config config/config.yaml
+python src/extract_cohort.py --config-file config/config.yaml
 ```
 
 This is the slow step on first run: it does one filtered pass each over
@@ -82,7 +82,7 @@ you've confirmed everything else works.
 ## 4. Run the experiment
 
 ```bash
-python src/run_experiment.py --config config/config.yaml
+python src/run_experiment.py --config-file config/config.yaml
 ```
 
 Fits the GBM and LSTM baselines, builds the similarity index, and runs every
@@ -97,7 +97,7 @@ sane. Raw forecast arrays and per-condition metric summaries are written to
 ## 5. Statistical analysis
 
 ```bash
-python src/evaluate_results.py --config config/config.yaml
+python src/evaluate_results.py --config-file config/config.yaml
 ```
 
 Produces the RQ1 (orchestration vs. single-model), RQ2 (critic ablation:
@@ -112,7 +112,7 @@ If you've moved from the original reference machine (11GB GTX 1080 Ti,
 32GB RAM) to something bigger — e.g. a ~40GB GPU, ~400GB RAM, 24+ CPU
 cores — everything above still works unchanged, but leaves most of that
 hardware idle. Use `config/config_highend.yaml` instead of `config.yaml`
-for every command above (`--config config/config_highend.yaml`) to
+for every command above (`--config-file config/config_highend.yaml`) to
 actually use it. It's the same design — same 5-variable panel, same
 cohort criteria, same conditions/ablations — just sized differently:
 

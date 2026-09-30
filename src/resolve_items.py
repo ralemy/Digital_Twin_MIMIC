@@ -9,13 +9,12 @@ eyeball and correct if needed, is safer and is the same approach documented in
 the proposal's Appendix A ("variable-panel item identifier mapping").
 
 Usage:
-    python src/resolve_items.py --config config/config.yaml
+    python src/resolve_items.py --config-file config/config.yaml
 Writes:
     <cache_dir>/item_mapping.json
 """
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -28,6 +27,7 @@ from common import (
     hosp_dir,
     icu_dir,
     load_config,
+    parse_step_args,
     require_mimic_layout,
 )
 
@@ -123,7 +123,6 @@ def main(config_path: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config/config.yaml")
-    args = parser.parse_args()
-    main(args.config)
+    doc = __doc__ or "Resolve variable panel item labels to MIMIC-IV itemids."
+    args = parse_step_args(doc.strip().splitlines()[0])
+    main(args.config_file)

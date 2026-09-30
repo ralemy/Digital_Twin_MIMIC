@@ -44,6 +44,6 @@ module load python/3.11
 source "$PROJECT_DIR/.venv/bin/activate"
 
 echo "== step 4/4: evaluate_results.py =="
-python src/evaluate_results.py --config "$CONFIG"
+python src/evaluate_results.py --config-file "$CONFIG"
 
 echo "== job $SLURM_JOB_ID finished at $(date) =="

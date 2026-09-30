@@ -9,7 +9,7 @@ correctly on your machine BEFORE pointing it at real, credentialed MIMIC-IV
 data. Takes well under a minute.
 
 Usage:
-    python src/smoke_test.py
+    python src/smoke_test.py [--config-file config/config.yaml]
 """
 from __future__ import annotations
 
@@ -20,18 +20,16 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import yaml
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import get_logger
+from common import get_logger, load_config, parse_step_args
 
 log = get_logger("smoke_test")
 
 
-def make_synthetic_config(tmp_dir: Path) -> dict:
-    cfg_path = Path(__file__).parent.parent / "config" / "config.yaml"
-    cfg = yaml.safe_load(cfg_path.read_text())
+def make_synthetic_config(config_path: str, tmp_dir: Path) -> dict:
+    cfg = load_config(config_path)
     for key in ("work_dir", "cache_dir", "results_dir"):
         cfg["paths"][key] = str(tmp_dir / key)
         Path(cfg["paths"][key]).mkdir(parents=True, exist_ok=True)
@@ -96,9 +94,9 @@ def mock_llm_generate(self, prompt, system=None, json_mode=False):
     return json.dumps({"forecast": forecast, "interval_halfwidth": halfwidth})
 
 
-def main() -> None:
+def main(config_path: str) -> None:
     tmp_dir = Path("/tmp/mimic_twin_smoke_test")
-    cfg = make_synthetic_config(tmp_dir)
+    cfg = make_synthetic_config(config_path, tmp_dir)
     cohort, panel_long = make_synthetic_cohort_and_panel(cfg)
 
     work_dir = Path(cfg["paths"]["work_dir"])
@@ -131,4 +129,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_step_args("Arguments to smoke test")
+    main(args.config_file)

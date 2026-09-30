@@ -34,6 +34,6 @@ echo "== account=def-roudsari  user=$(whoami)  project_dir=$PROJECT_DIR =="
 module load python/3.11
 source "$PROJECT_DIR/.venv/bin/activate"
 
-python src/smoke_test.py
+python src/smoke_test.py --config-file config/config_nibi_lean.yaml
 
 echo "== job $SLURM_JOB_ID finished at $(date) =="

@@ -46,6 +46,6 @@ module load python/3.11
 source "$PROJECT_DIR/.venv/bin/activate"
 
 echo "== step 1/4: resolve_items.py =="
-python src/resolve_items.py --config "$CONFIG"
+python src/resolve_items.py --config-file "$CONFIG"
 
 echo "== job $SLURM_JOB_ID finished at $(date) =="
