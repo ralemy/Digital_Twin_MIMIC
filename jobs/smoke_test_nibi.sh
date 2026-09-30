@@ -18,7 +18,7 @@
 #SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-smoke
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
+#SBATCH --mem=8000M
 #SBATCH --time=00:15:00
 #SBATCH --output=%x-%j.out
 

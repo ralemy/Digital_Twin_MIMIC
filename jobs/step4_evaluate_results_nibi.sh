@@ -20,7 +20,7 @@
 #SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-step4-evaluate
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=16000M
 #SBATCH --time=00:30:00
 #SBATCH --output=%x-%j.out
 

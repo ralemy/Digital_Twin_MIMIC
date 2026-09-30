@@ -32,7 +32,7 @@
 #SBATCH --job-name=mimic-twin-step3-experiment
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=64G
+#SBATCH --mem=64000M
 #SBATCH --time=08:00:00
 #SBATCH --output=%x-%j.out
 

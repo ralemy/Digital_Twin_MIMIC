@@ -3,3 +3,6 @@ __pycache__/
 .venv/
 *.npz
 *.log
+*.out
+mimic-iv
+mimic-iv-twin-work/

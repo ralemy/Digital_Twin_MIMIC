@@ -26,7 +26,7 @@
 #SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-step2-extract
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=192G
+#SBATCH --mem=192000M
 #SBATCH --time=02:00:00
 #SBATCH --output=%x-%j.out
 

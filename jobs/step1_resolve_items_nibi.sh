@@ -22,10 +22,10 @@
 #SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-step1-resolve
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=32000M
 #SBATCH --time=00:30:00
 #SBATCH --output=%x-%j.out
-
+echo "starting"
 set -euo pipefail
 
 : "${AGENTIC_DT_PRJ:?AGENTIC_DT_PRJ is not set — export it to the project directory before sbatch, e.g. export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1}"
