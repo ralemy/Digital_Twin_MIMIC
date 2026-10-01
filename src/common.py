@@ -71,6 +71,14 @@ def get_duckdb_connection(cfg: dict):
     mem_gb = perf.get("duckdb_memory_limit_gb", 8)
     con.execute(f"PRAGMA threads={int(threads)}")
     con.execute(f"PRAGMA memory_limit='{int(mem_gb)}GB'")
+    # When DuckDB hits memory_limit it spills to temp_directory, which for an
+    # in-memory database defaults to ./.tmp — i.e. the (networked) project
+    # filesystem when run from the repo. Inside a Slurm job, spill to the
+    # node-local $SLURM_TMPDIR instead; it is fast and cleaned up with the job.
+    temp_dir = perf.get("duckdb_temp_dir") or os.environ.get("SLURM_TMPDIR")
+    if temp_dir:
+        temp_dir = str(Path(os.path.expandvars(temp_dir)).expanduser() / "duckdb_tmp")
+        con.execute(f"SET temp_directory='{temp_dir}'")
     return con
 
 

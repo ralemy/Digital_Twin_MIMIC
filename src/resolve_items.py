@@ -43,8 +43,18 @@ def _find_file(directory: Path, stem: str) -> Path:
     raise FileNotFoundError(f"Could not find {stem}.csv or {stem}.csv.gz under {directory}")
 
 
-def resolve_icu_item(con: duckdb.DuckDBPyConnection, d_items_path: Path, patterns: list[str], excludes: list[str]) -> list[dict]:
-    like_clauses = " OR ".join(["label ILIKE '%' || ? || '%'" for _ in patterns])
+def _label_clauses(patterns: list[str], exact: bool) -> str:
+    """Case-insensitive label match: the label must contain a pattern, or with
+    exact=True be equal to one. Exact matching is for short labels such as
+    "pH" or "Hemoglobin", which as substrings match dozens of unrelated items
+    (Phosphate, Lymphocytes, Carboxyhemoglobin, ...)."""
+    clause = "label ILIKE ?" if exact else "label ILIKE '%' || ? || '%'"
+    return " OR ".join([clause for _ in patterns])
+
+
+def resolve_icu_item(con: duckdb.DuckDBPyConnection, d_items_path: Path, patterns: list[str], excludes: list[str],
+                     exact: bool = False) -> list[dict]:
+    like_clauses = _label_clauses(patterns, exact)
     query = f"""
         SELECT itemid, label, category, param_type, unitname
         FROM read_csv_auto(?, ignore_errors=true)
@@ -62,8 +72,9 @@ def resolve_icu_item(con: duckdb.DuckDBPyConnection, d_items_path: Path, pattern
     return results
 
 
-def resolve_lab_item(con: duckdb.DuckDBPyConnection, d_labitems_path: Path, patterns: list[str], excludes: list[str]) -> list[dict]:
-    like_clauses = " OR ".join(["label ILIKE '%' || ? || '%'" for _ in patterns])
+def resolve_lab_item(con: duckdb.DuckDBPyConnection, d_labitems_path: Path, patterns: list[str], excludes: list[str],
+                     exact: bool = False, fluids: list[str] | None = None) -> list[dict]:
+    like_clauses = _label_clauses(patterns, exact)
     query = f"""
         SELECT itemid, label, fluid, category
         FROM read_csv_auto(?, ignore_errors=true)
@@ -78,6 +89,12 @@ def resolve_lab_item(con: duckdb.DuckDBPyConnection, d_labitems_path: Path, patt
             r for r in results
             if not any(ex.lower() in (r["label"] or "").lower() for ex in excludes)
         ]
+    if fluids:
+        # d_labitems has a separate `fluid` column (Blood, Urine, Pleural,
+        # Cerebrospinal Fluid, ...); filtering on it is more reliable than
+        # excluding fluid names from labels, which many items don't include.
+        wanted = {f.lower() for f in fluids}
+        results = [r for r in results if (r["fluid"] or "").lower() in wanted]
     return results
 
 
@@ -95,10 +112,17 @@ def main(config_path: str) -> None:
     for var in cfg["variables"]:
         patterns = var["label_patterns"]
         excludes = var.get("exclude_patterns", [])
+        match = var.get("match", "contains")
+        if match not in ("contains", "exact"):
+            raise ValueError(f"Unknown match '{match}' for variable '{var['name']}' (use 'contains' or 'exact')")
+        exact = match == "exact"
         if var["source"] == "icu_chartevents":
-            matches = resolve_icu_item(con, d_items_path, patterns, excludes)
+            if var.get("fluids"):
+                raise ValueError(f"'fluids' only applies to hosp_labevents variables (variable '{var['name']}')")
+            matches = resolve_icu_item(con, d_items_path, patterns, excludes, exact=exact)
         elif var["source"] == "hosp_labevents":
-            matches = resolve_lab_item(con, d_labitems_path, patterns, excludes)
+            matches = resolve_lab_item(con, d_labitems_path, patterns, excludes, exact=exact,
+                                       fluids=var.get("fluids"))
         else:
             raise ValueError(f"Unknown source '{var['source']}' for variable '{var['name']}'")
 

@@ -17,11 +17,13 @@
 #   sbatch jobs/step2_extract_cohort_nibi.sh config/config_nibi_full_variables.yaml
 # Defaults to config_nibi_lean.yaml (the HREB-approved scope) if omitted.
 #
-# --cpus-per-task/--mem below match config_nibi_*.yaml's duckdb_threads=10 /
-# duckdb_memory_limit_gb=200 with a little headroom on cores; those config
-# numbers are themselves conservative estimates (Nibi's own per-node spec
-# sheet wasn't reachable while preparing this) — check
-# `sinfo -o "%N %c %m %G"` and raise both together if more is available.
+# --cpus-per-task/--mem below pair with config_nibi_*.yaml's duckdb_threads=10
+# / duckdb_memory_limit_gb=120. --mem=192000M (~201 GB) must stay well above
+# the DuckDB limit: after DuckDB finishes, the script loads the cached panel
+# into pandas, and that needs its own headroom (~80 GB here). DuckDB spills
+# to the node-local $SLURM_TMPDIR (3 TB on Nibi CPU nodes) past its limit.
+# If you change one, change the other; check actual peak usage afterwards
+# with `seff <jobid>` and trim --mem if it was far below.
 # =============================================================================
 #SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-step2-extract

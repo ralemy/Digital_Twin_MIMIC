@@ -73,6 +73,7 @@ variables:
   - name: heart_rate
     source: icu_chartevents
     label_patterns: ["Heart Rate"]
+    exclude_patterns: ["Alarm"]                 # drops "Heart rate Alarm - High/Low" (alarm thresholds, not measurements)
     plausible_range: [20, 250]
     unit: "bpm"
   - name: resp_rate
@@ -84,6 +85,7 @@ variables:
   - name: spo2
     source: icu_chartevents
     label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
+    exclude_patterns: ["Alarm", "Limit", "Sensor"]   # drops SpO2 alarm thresholds, "SpO2 Desat Limit", sensor-placement checkbox
     plausible_range: [50, 100]
     unit: "%"
   - name: map
@@ -94,7 +96,8 @@ variables:
   - name: lactate
     source: hosp_labevents
     label_patterns: ["Lactate"]
-    exclude_patterns: ["CSF"]
+    exclude_patterns: ["Dehydrogenase"]         # "Lactate" also matches lactate dehydrogenase (LDH), a different test
+    fluids: ["Blood"]
     plausible_range: [0.1, 30]
     unit: "mmol/L"
   # --- added vitals (icu/chartevents) ---
@@ -117,25 +120,25 @@ variables:
   - name: creatinine
     source: hosp_labevents
     label_patterns: ["Creatinine"]
-    exclude_patterns: ["Urine", "Ascites", "Body Fluid", "Pleural", "Joint Fluid"]
+    fluids: ["Blood"]
     plausible_range: [0.1, 20]
     unit: "mg/dL"
   - name: bun
     source: hosp_labevents
     label_patterns: ["Urea Nitrogen"]
-    exclude_patterns: ["Urine"]
+    fluids: ["Blood"]
     plausible_range: [1, 200]
     unit: "mg/dL"
   - name: sodium
     source: hosp_labevents
     label_patterns: ["Sodium"]
-    exclude_patterns: ["Urine"]
+    fluids: ["Blood"]
     plausible_range: [100, 180]
     unit: "mEq/L"
   - name: potassium
     source: hosp_labevents
     label_patterns: ["Potassium"]
-    exclude_patterns: ["Urine"]
+    fluids: ["Blood"]
     plausible_range: [1.5, 9]
     unit: "mEq/L"
   - name: wbc
@@ -151,29 +154,33 @@ variables:
   - name: hemoglobin
     source: hosp_labevents
     label_patterns: ["Hemoglobin"]
-    exclude_patterns: ["Urine"]
+    match: exact                               # substring match picks up Carboxy-/Met-hemoglobin, Hb A1c, fetal Hb, ...
+    fluids: ["Blood"]
     plausible_range: [2, 22]
     unit: "g/dL"
   - name: bicarbonate
     source: hosp_labevents
     label_patterns: ["Bicarbonate"]
+    fluids: ["Blood"]
     plausible_range: [5, 50]
     unit: "mEq/L"
   - name: glucose
     source: hosp_labevents
     label_patterns: ["Glucose"]
-    exclude_patterns: ["Urine", "CSF", "Body Fluid"]
+    fluids: ["Blood"]
     plausible_range: [10, 1000]
     unit: "mg/dL"
   - name: bilirubin_total
     source: hosp_labevents
     label_patterns: ["Bilirubin, Total"]
+    fluids: ["Blood"]
     plausible_range: [0.1, 50]
     unit: "mg/dL"
   - name: ph
     source: hosp_labevents
     label_patterns: ["pH"]
-    exclude_patterns: ["Urine"]
+    match: exact                               # "pH" as a substring matches ~130 labels (Phosphate, Lymphocytes, ...)
+    fluids: ["Blood"]
     plausible_range: [6.8, 7.8]
     unit: ""
 

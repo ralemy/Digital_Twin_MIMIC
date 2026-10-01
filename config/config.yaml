@@ -42,6 +42,7 @@ variables:
   - name: heart_rate
     source: icu_chartevents
     label_patterns: ["Heart Rate"]
+    exclude_patterns: ["Alarm"]                 # drops "Heart rate Alarm - High/Low" (alarm thresholds, not measurements)
     plausible_range: [20, 250]     # beats per minute
     unit: "bpm"
   - name: resp_rate
@@ -53,6 +54,7 @@ variables:
   - name: spo2
     source: icu_chartevents
     label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
+    exclude_patterns: ["Alarm", "Limit", "Sensor"]   # drops SpO2 alarm thresholds, "SpO2 Desat Limit", sensor-placement checkbox
     plausible_range: [50, 100]
     unit: "%"
   - name: map
@@ -63,7 +65,8 @@ variables:
   - name: lactate
     source: hosp_labevents
     label_patterns: ["Lactate"]
-    exclude_patterns: ["CSF"]
+    exclude_patterns: ["Dehydrogenase"]         # "Lactate" also matches lactate dehydrogenase (LDH), a different test
+    fluids: ["Blood"]
     plausible_range: [0.1, 30]
     unit: "mmol/L"
 

@@ -11,8 +11,10 @@ Inclusion criteria (Chapter 5, Section 5.3):
     observation + horizon window
 
 Outputs (written under <work_dir>):
-  cache/chartevents_panel.parquet   filtered raw chartevents rows for the panel itemids
-  cache/labevents_panel.parquet     filtered raw labevents rows (lactate)
+  cache/chartevents_panel_<N>h.parquet  filtered raw chartevents rows for the panel itemids,
+                                        restricted to the first N = observation + horizon hours
+                                        of each stay
+  cache/labevents_panel_<N>h.parquet    filtered raw labevents rows (lactate), same window
   cache/vasopressor_events.parquet  filtered inputevents rows used for RQ3 labels
   cohort.parquet                    one row per eligible stay_id, with split assignment
   panel_long.parquet                long-format (stay_id, variable, hour, value) resampled panel
@@ -50,6 +52,21 @@ def _find_file(directory: Path, stem: str) -> Path:
         if candidate.exists():
             return candidate
     raise FileNotFoundError(f"Could not find {stem}.csv or {stem}.csv.gz under {directory}")
+
+
+def _window_hours(cfg: dict) -> int:
+    c = cfg["cohort"]
+    return c["observation_window_hours"] + c["forecast_horizon_hours"]
+
+
+def _panel_cache_paths(cfg: dict) -> tuple[Path, Path]:
+    """The panel caches only hold rows inside the observation + horizon
+    window, so the window is part of the filename — changing it in the config
+    triggers a fresh extraction instead of silently reusing a narrower cache."""
+    cache_dir = Path(cfg["paths"]["cache_dir"])
+    total_h = _window_hours(cfg)
+    return (cache_dir / f"chartevents_panel_{total_h}h.parquet",
+            cache_dir / f"labevents_panel_{total_h}h.parquet")
 
 
 def build_eligible_stays(con: duckdb.DuckDBPyConnection, cfg: dict) -> pd.DataFrame:
@@ -98,14 +115,16 @@ def cache_panel_raw(con: duckdb.DuckDBPyConnection, cfg: dict, eligible_stays: p
 
     Filters are pushed down via registered temp tables (semi-joins) rather
     than string-interpolated IN (...) lists, so this stays correct and fast
-    even when the eligible cohort or itemid set is large."""
-    cache_dir = Path(cfg["paths"]["cache_dir"])
+    even when the eligible cohort or itemid set is large. The time window
+    (intime .. intime + observation + horizon hours, inclusive — the same
+    bounds resample_and_filter() applies) is pushed down too, so rows the
+    later steps would discard are never written or loaded into pandas."""
+    chart_out, lab_out = _panel_cache_paths(cfg)
+    total_h = _window_hours(cfg)
     stay_ids = eligible_stays["stay_id"].tolist()
-    hadm_ids = eligible_stays["hadm_id"].unique().tolist()
+    n_hadm = eligible_stays["hadm_id"].nunique()
 
     con.register("eligible_stays_df", eligible_stays[["stay_id", "hadm_id", "intime"]])
-    con.register("stay_ids_df", pd.DataFrame({"stay_id": stay_ids}))
-    con.register("hadm_ids_df", pd.DataFrame({"hadm_id": hadm_ids}))
 
     chart_itemids = []
     lab_itemids = []
@@ -117,7 +136,7 @@ def cache_panel_raw(con: duckdb.DuckDBPyConnection, cfg: dict, eligible_stays: p
 
     if chart_itemids:
         chartevents_path = _find_file(icu_dir(cfg), "chartevents")
-        out_path = cache_dir / "chartevents_panel.parquet"
+        out_path = chart_out
         if not out_path.exists():
             log.info("Scanning chartevents for %d itemids over %d stays (one-time pass, can take a while)...",
                       len(chart_itemids), len(stay_ids))
@@ -126,9 +145,14 @@ def cache_panel_raw(con: duckdb.DuckDBPyConnection, cfg: dict, eligible_stays: p
                 COPY (
                     SELECT ce.stay_id, ce.itemid, ce.charttime, ce.valuenum
                     FROM read_csv_auto('{chartevents_path}', ignore_errors=true) ce
-                    WHERE ce.stay_id IN (SELECT stay_id FROM stay_ids_df)
-                      AND ce.itemid IN (SELECT itemid FROM chart_itemids_df)
+                    WHERE ce.itemid IN (SELECT itemid FROM chart_itemids_df)
                       AND ce.valuenum IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1 FROM eligible_stays_df es
+                          WHERE es.stay_id = ce.stay_id
+                            AND CAST(ce.charttime AS TIMESTAMP) >= es.intime
+                            AND CAST(ce.charttime AS TIMESTAMP) <= es.intime + INTERVAL {total_h} HOUR
+                      )
                 ) TO '{out_path}' (FORMAT PARQUET)
             """)
             log.info("Wrote %s", out_path)
@@ -137,18 +161,23 @@ def cache_panel_raw(con: duckdb.DuckDBPyConnection, cfg: dict, eligible_stays: p
 
     if lab_itemids:
         labevents_path = _find_file(hosp_dir(cfg), "labevents")
-        out_path = cache_dir / "labevents_panel.parquet"
+        out_path = lab_out
         if not out_path.exists():
             log.info("Scanning labevents for %d itemids over %d admissions (one-time pass)...",
-                      len(lab_itemids), len(hadm_ids))
+                      len(lab_itemids), n_hadm)
             con.register("lab_itemids_df", pd.DataFrame({"itemid": lab_itemids}))
             con.execute(f"""
                 COPY (
                     SELECT le.hadm_id, le.itemid, le.charttime, le.valuenum
                     FROM read_csv_auto('{labevents_path}', ignore_errors=true) le
                     WHERE le.itemid IN (SELECT itemid FROM lab_itemids_df)
-                      AND le.hadm_id IN (SELECT hadm_id FROM hadm_ids_df)
                       AND le.valuenum IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1 FROM eligible_stays_df es
+                          WHERE es.hadm_id = le.hadm_id
+                            AND CAST(le.charttime AS TIMESTAMP) >= es.intime
+                            AND CAST(le.charttime AS TIMESTAMP) <= es.intime + INTERVAL {total_h} HOUR
+                      )
                 ) TO '{out_path}' (FORMAT PARQUET)
             """)
             log.info("Wrote %s", out_path)
@@ -201,14 +230,12 @@ def resample_and_filter(cfg: dict, eligible_stays: pd.DataFrame, item_mapping: d
     """Resample raw events to hourly bins per stay/variable, compute panel
     coverage over the observation+horizon window, and drop stays below the
     coverage threshold. Returns (cohort_df, panel_long_df)."""
-    cache_dir = Path(cfg["paths"]["cache_dir"])
     c = cfg["cohort"]
     obs_h, hor_h = c["observation_window_hours"], c["forecast_horizon_hours"]
     total_h = obs_h + hor_h
 
     frames = []
-    chart_path = cache_dir / "chartevents_panel.parquet"
-    lab_path = cache_dir / "labevents_panel.parquet"
+    chart_path, lab_path = _panel_cache_paths(cfg)
 
     itemid_to_var = {}
     for var, info in item_mapping.items():
@@ -304,6 +331,9 @@ def main(config_path: str) -> None:
 
     cache_panel_raw(con, cfg, eligible, item_mapping)
     cache_vasopressor_events(con, cfg, eligible)
+    # Release DuckDB's buffer pool before the pandas-heavy resampling below,
+    # so the two phases don't hold memory at the same time.
+    con.close()
 
     cohort, panel_long = resample_and_filter(cfg, eligible, item_mapping)
     cohort = assign_splits(cohort, cfg)
