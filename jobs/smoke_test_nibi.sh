@@ -7,12 +7,12 @@
 # well under a minute of actual work; the time/resource limits below are
 # generous headroom, not an estimate of what it needs.
 #
-# Reads the project directory from $AGENTIC_DT_PRJ (must be exported in the
-# submitting shell — sbatch passes the submission environment through by
-# default, so `export AGENTIC_DT_PRJ=...` before `sbatch` is enough).
 #
-# Submit with:
-#   export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1
+# Settings (project directory) come from your profile,
+# ~/.config/dt_profile.yml (see config/profile.sample.yml and README,
+# 'Your profile'). To use another profile, add --profile <file> anywhere
+# in the job's arguments. Submit from the project directory:
+#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
 #   sbatch jobs/smoke_test_nibi.sh
 # =============================================================================
 #SBATCH --account=def-roudsari
@@ -24,7 +24,14 @@
 
 set -euo pipefail
 
-: "${AGENTIC_DT_PRJ:?AGENTIC_DT_PRJ is not set — export it to the project directory before sbatch, e.g. export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1}"
+# Settings come from the profile (~/.config/dt_profile.yml, or --profile
+# <file> among this job's arguments) — see jobs/load_profile.sh. The
+# remaining arguments are this job's own.
+source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
+    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+load_profile "$@" || exit 1
+set -- "${JOB_ARGS[@]}"
+
 PROJECT_DIR="$AGENTIC_DT_PRJ"
 cd "$PROJECT_DIR"
 

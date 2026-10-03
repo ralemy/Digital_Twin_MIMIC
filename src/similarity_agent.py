@@ -12,6 +12,8 @@ similar training patients to a given test patient. No network calls.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
@@ -80,7 +82,11 @@ class SimilarityAgent:
         dist, idx = self.nn.kneighbors(fv_scaled) # type: ignore
         neighbor_ids = [self.train_stay_ids[i] for i in idx[0]]
         neighbor_horizons = np.stack([self.train_horizons[i] for i in neighbor_ids])  # (k, hor_h, n_var)
-        cohort_mean_trajectory = np.nanmean(neighbor_horizons, axis=0)  # (hor_h, n_var)
+        with warnings.catch_warnings():
+            # A cell none of the k neighbours observed (common for lactate)
+            # is NaN by design; the forecasting agent skips it.
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            cohort_mean_trajectory = np.nanmean(neighbor_horizons, axis=0)  # (hor_h, n_var)
         return {
             "neighbor_stay_ids": neighbor_ids,
             "distances": dist[0].tolist(),

@@ -200,7 +200,7 @@ llm:
   # (forecasting_agent.py's _validate_shape() falls back to naive on any
   # parse/shape failure, so a truncation shows up as silently-degraded
   # accuracy, not a crash) and raise further if needed.
-  max_tokens: 1800
+  max_tokens: 4096   # JSON for 19 variables x 24 h is ~2,500-3,500 tokens; 1800 would truncate every forecast
   request_timeout_s: 240
   # A 19-variable prompt (per-hour summaries + similarity-cohort context)
   # is meaningfully longer than the 5-variable version — raised from 8192

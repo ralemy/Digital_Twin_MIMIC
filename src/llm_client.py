@@ -20,7 +20,7 @@ import time
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import get_logger
+from common import get_logger, ollama_model_name
 
 log = get_logger("llm_client")
 
@@ -30,7 +30,8 @@ class LocalLLM:
         llm_cfg = cfg["llm"]
         self.backend = llm_cfg["backend"]
         self.host = llm_cfg["ollama_host"]
-        self.model = llm_cfg["model"]
+        self.model = ollama_model_name(llm_cfg)      # alias if set — the name sent to Ollama
+        self.source_model = llm_cfg["model"]         # the tag it was pulled as
         self.temperature = llm_cfg["temperature"]
         self.max_tokens = llm_cfg["max_tokens"]
         self.timeout = llm_cfg["request_timeout_s"]
@@ -66,10 +67,13 @@ class LocalLLM:
             resp.raise_for_status()
             models = [m["name"] for m in resp.json().get("models", [])]
             if self.model not in models:
+                setup = f"ollama pull {self.source_model}"
+                if self.model != self.source_model:
+                    setup += f" && ollama cp {self.source_model} {self.model}"
                 log.warning(
                     "Configured model '%s' not found in `ollama list` output (%s). "
-                    "Run `ollama pull %s` before starting the experiment.",
-                    self.model, models, self.model,
+                    "Run `%s` before starting the experiment.",
+                    self.model, models, setup,
                 )
         except requests.exceptions.ConnectionError:
             raise RuntimeError(
@@ -96,8 +100,15 @@ class LocalLLM:
         t0 = time.time()
         resp = self._session.post(f"{self.host}/api/generate", json=payload, timeout=self.timeout)
         resp.raise_for_status()
-        text = resp.json()["response"]
+        body = resp.json()
+        text = body["response"]
         log.debug("LLM call took %.2fs, %d chars out.", time.time() - t0, len(text))
+        # Ollama reports done_reason "length" when generation hit num_predict:
+        # the output is cut off mid-answer, so say so rather than letting the
+        # caller report it as malformed JSON.
+        if body.get("done_reason") == "length":
+            raise ValueError(f"LLM output truncated at max_tokens={self.max_tokens} "
+                             f"({body.get('eval_count', '?')} tokens generated) — raise llm.max_tokens in the config")
         return text
 
 

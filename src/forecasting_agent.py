@@ -16,7 +16,11 @@ last-value-carried-forward forecast is substituted and the failure is logged
 """
 from __future__ import annotations
 
+import threading
+import warnings
+
 import numpy as np
+import requests
 
 from common import get_logger
 from harmonization_agent import summarize_observation
@@ -72,6 +76,12 @@ class ForecastingAgent:
         self.variables = [v["name"] for v in cfg["variables"]]
         self.units = {v["name"]: v["unit"] for v in cfg["variables"]}
         self.horizon_hours = cfg["cohort"]["forecast_horizon_hours"]
+        # How many forecast() calls fell back to the naive forecast. Reported
+        # per condition: a model that often fails to produce valid JSON would
+        # otherwise just look like the naive baseline. Locked because
+        # pipeline.py calls forecast() from a thread pool.
+        self.n_fallbacks = 0
+        self._fallback_lock = threading.Lock()
 
     def forecast(self, obs: np.ndarray, similarity_context: dict | None = None) -> dict:
         obs_summary = summarize_observation(obs, self.variables)
@@ -82,7 +92,10 @@ class ForecastingAgent:
             cohort_traj = similarity_context["cohort_mean_trajectory"]
             lines = []
             for i, var in enumerate(self.variables):
-                mean_end = np.nanmean(cohort_traj[:, i])
+                with warnings.catch_warnings():
+                    # All-missing column (e.g. no neighbour had lactate): NaN, skipped below.
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    mean_end = np.nanmean(cohort_traj[:, i])
                 if not np.isnan(mean_end):
                     lines.append(f"- {var}: similar-patient cohort average over the horizon ≈ {mean_end:.1f}{self.units[var]}")
             if lines:
@@ -99,7 +112,7 @@ class ForecastingAgent:
             f"Observation window summary ({len(self.variables)} variables, most recent "
             f"reading first in 'last'):\n{obs_block}{similarity_block}\n\n"
             f"Forecast each variable for the next {self.horizon_hours} hours, one value per "
-            "hour, as strict JSON per the system instructions."
+            "hour with one decimal place, as strict JSON per the system instructions."
         )
 
         try:
@@ -107,8 +120,14 @@ class ForecastingAgent:
             parsed = extract_json_block(raw)
             self._validate_shape(parsed)
             return parsed
+        except requests.exceptions.ConnectionError:
+            # The Ollama server is gone (job ending, crash): not a model
+            # failure, so stop the run rather than record a naive forecast.
+            raise
         except Exception as e:  # noqa: BLE001 - deliberately broad: any parse/shape failure falls back
             log.warning("Forecasting agent LLM call failed or malformed (%s); using naive fallback.", e)
+            with self._fallback_lock:
+                self.n_fallbacks += 1
             return _naive_fallback(obs, self.horizon_hours, self.variables)
 
     def _validate_shape(self, parsed: dict) -> None:

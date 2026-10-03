@@ -36,6 +36,10 @@ def make_synthetic_config(config_path: str, tmp_dir: Path) -> dict:
     cfg["cohort"]["max_patients"] = 40
     cfg["cohort"]["observation_window_hours"] = 24
     cfg["cohort"]["forecast_horizon_hours"] = 12  # shorter horizon for a fast smoke test
+    # Exercise the '@variant' path too (the mock LLM ignores the model name).
+    cfg["llm"]["variants"] = {"smoke_alt": {"model": "hf.co/smoke/alt-model-GGUF:Q4_K_M", "alias": "smoke-alt"}}
+    cfg["conditions"] = [c for c in cfg["conditions"] if "@" not in c] + [
+        "single_model_llm@smoke_alt", "full_pipeline@smoke_alt"]
     return cfg
 
 
@@ -112,8 +116,11 @@ def main(config_path: str) -> None:
 
     with patch("llm_client.LocalLLM._check_server", lambda self: None), \
          patch("llm_client.LocalLLM.generate", mock_llm_generate):
-        from pipeline import fit_models, run_condition
+        from pipeline import fit_models, run_condition, validate_conditions
+        validate_conditions(cfg)
         fitted = fit_models(cfg, splits["train"])
+        alt_llm = fitted["variants"]["smoke_alt"]["forecaster"].llm
+        assert alt_llm.model == "smoke-alt", f"variant alias not used: {alt_llm.model}"
 
         from metrics import evaluate_twin
         variables = [v["name"] for v in cfg["variables"]]

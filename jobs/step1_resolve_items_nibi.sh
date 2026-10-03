@@ -6,12 +6,13 @@
 # quick and does NOT touch chartevents/labevents themselves). No GPU, no
 # Ollama needed.
 #
-# Reads the project directory from $AGENTIC_DT_PRJ (export it in the
-# submitting shell before `sbatch` — sbatch passes the submission
-# environment through by default).
+# Settings (project directory, data_root) come from your profile,
+# ~/.config/dt_profile.yml (see config/profile.sample.yml and README,
+# 'Your profile'). To use another profile, add --profile <file> anywhere
+# in the job's arguments. Submit from the project directory.
 #
 # Works for either scope — pass the config file as the first argument:
-#   export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1
+#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
 #   sbatch jobs/step1_resolve_items_nibi.sh config/config_nibi_lean.yaml
 #   sbatch jobs/step1_resolve_items_nibi.sh config/config_nibi_full_variables.yaml
 # Defaults to config_nibi_lean.yaml (the HREB-approved scope) if omitted.
@@ -28,7 +29,14 @@
 echo "starting"
 set -euo pipefail
 
-: "${AGENTIC_DT_PRJ:?AGENTIC_DT_PRJ is not set — export it to the project directory before sbatch, e.g. export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1}"
+# Settings come from the profile (~/.config/dt_profile.yml, or --profile
+# <file> among this job's arguments) — see jobs/load_profile.sh. The
+# remaining arguments are this job's own.
+source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
+    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+load_profile "$@" || exit 1
+set -- "${JOB_ARGS[@]}"
+
 PROJECT_DIR="$AGENTIC_DT_PRJ"
 cd "$PROJECT_DIR"
 

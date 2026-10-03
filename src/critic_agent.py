@@ -15,6 +15,7 @@ local LLM, not a different or larger model.
 from __future__ import annotations
 
 import numpy as np
+import requests
 
 from common import get_logger
 from llm_client import LocalLLM, extract_json_block
@@ -105,6 +106,8 @@ class CriticAgent:
             if len(fixed) != len(values):
                 raise ValueError("corrected_values length mismatch")
             return fixed
+        except requests.exceptions.ConnectionError:
+            raise                       # server gone: stop the run, don't clip and carry on
         except Exception as e:  # noqa: BLE001
             log.warning("Critic correction call failed for '%s' (%s); will clip instead.", var, e)
             return np.array(values, dtype=float)

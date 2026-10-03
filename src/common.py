@@ -9,15 +9,21 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Callable
 
 import yaml
 
 DEFAULT_CONFIG_PATH = "config/config.yaml"
 
 
-def parse_step_args(description: str | None = None) -> argparse.Namespace:
+def parse_step_args(
+    description: str | None = None,
+    add_arguments: Callable[[argparse.ArgumentParser], None] | None = None,
+) -> argparse.Namespace:
     """Common CLI for every step script. `--config` is kept as an alias of
-    `--config-file` so existing job scripts and commands keep working."""
+    `--config-file` so existing job scripts and commands keep working.
+    `add_arguments(parser)` lets a step add its own flags (e.g.
+    run_experiment.py's --full-refresh)."""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "--config-file", "--config",
@@ -25,6 +31,8 @@ def parse_step_args(description: str | None = None) -> argparse.Namespace:
         default=DEFAULT_CONFIG_PATH,
         help=f"path to the YAML config file (default: {DEFAULT_CONFIG_PATH})",
     )
+    if add_arguments is not None:
+        add_arguments(parser)
     args = parser.parse_args()
     if not Path(args.config_file).is_file():
         parser.error(f"config file not found: {args.config_file}")
@@ -103,6 +111,97 @@ def hosp_dir(cfg: dict) -> Path:
 
 def icu_dir(cfg: dict) -> Path:
     return Path(cfg["paths"]["mimic_root"]) / "icu"
+
+
+LLM_CONDITIONS = ("single_model_llm", "full_pipeline", "full_pipeline_no_critic", "full_pipeline_no_similarity")
+
+
+def split_condition(condition: str) -> tuple[str, str | None]:
+    """A condition may name an alternative LLM after '@', e.g.
+    'full_pipeline@medgemma' -> ('full_pipeline', 'medgemma');
+    'full_pipeline' -> ('full_pipeline', None), i.e. the default llm.model."""
+    base, sep, variant = condition.partition("@")
+    return base, (variant if sep else None)
+
+
+def cfg_for_llm_variant(cfg: dict, variant: str | None) -> dict:
+    """The config as seen by one LLM variant: llm.variants.<variant> overlaid
+    on the llm section, so a variant only needs to list what differs (usually
+    just `model`, sometimes num_ctx/max_tokens). variant=None returns cfg."""
+    if variant is None:
+        return cfg
+    variants = cfg["llm"].get("variants") or {}
+    if variant not in variants:
+        raise ValueError(f"LLM variant '{variant}' is used in `conditions` but not defined "
+                         f"under llm.variants (defined: {sorted(variants)})")
+    llm = {k: v for k, v in cfg["llm"].items() if k != "variants"}
+    # A variant that swaps the model must not inherit the default model's
+    # alias — that alias names a different model in `ollama list`.
+    if "model" in variants[variant] and "alias" not in variants[variant]:
+        llm.pop("alias", None)
+    llm.update(variants[variant])
+    return {**cfg, "llm": llm}
+
+
+def ollama_model_name(llm_cfg: dict) -> str:
+    """The name to send to Ollama: llm.alias if set, else llm.model. `model`
+    is the tag you pull (often a long hf.co/... path); `alias` is an optional
+    short local name for it, created once with `ollama cp <model> <alias>`."""
+    return llm_cfg.get("alias") or llm_cfg["model"]
+
+
+def llm_variants_in_use(cfg: dict) -> list[str | None]:
+    """The LLM variants a run will build, None meaning the default llm.model.
+    The default is built if run_single_model_llm is set or any full_pipeline*
+    condition has no '@variant'; a variant only if a condition names it."""
+    parsed = [split_condition(c) for c in cfg["conditions"]]
+    out: list[str | None] = []
+    if cfg["baselines"]["run_single_model_llm"] or any(
+        "full_pipeline" in base and variant is None for base, variant in parsed
+    ):
+        out.append(None)
+    for base, variant in parsed:
+        if variant is not None and base in LLM_CONDITIONS and variant not in out:
+            out.append(variant)
+    return out
+
+
+def llm_models_in_use(cfg: dict) -> list[str]:
+    """Ollama model names (alias where one is set) a run needs present in
+    `ollama list`, e.g. for the job script's pre-flight check:
+    `python -c '...print(*llm_models_in_use(cfg))'`."""
+    models = [ollama_model_name(cfg_for_llm_variant(cfg, v)["llm"]) for v in llm_variants_in_use(cfg)]
+    return list(dict.fromkeys(models))
+
+
+def llm_models_to_set_up(cfg: dict) -> list[tuple[str, str | None]]:
+    """(model, alias) for every LLM a run needs, alias None where none is set,
+    e.g. for jobs/prep2_download_models.sh."""
+    pairs = []
+    for v in llm_variants_in_use(cfg):
+        llm = cfg_for_llm_variant(cfg, v)["llm"]
+        pairs.append((llm["model"], llm.get("alias") or None))
+    return list(dict.fromkeys(pairs))
+
+
+def llm_setup_commands(cfg: dict) -> list[str]:
+    """Login-node commands that make every model a run needs available:
+    `ollama pull <model>`, plus `ollama cp <model> <alias>` where an alias is set."""
+    return [f"ollama pull {model}" + (f" && ollama cp {model} {alias}" if alias else "")
+            for model, alias in llm_models_to_set_up(cfg)]
+
+
+def vasopressor_window_hours(cfg: dict) -> int:
+    """Vasopressor events are kept from ICU admission up to the end of the
+    RQ3 lookahead window (observation cutoff + lookahead_hours)."""
+    return cfg["cohort"]["observation_window_hours"] + cfg["deterioration_labels"]["lookahead_hours"]
+
+
+def vasopressor_cache_path(cfg: dict) -> Path:
+    """Written by extract_cohort.py, read by evaluate_results.py. The window
+    is part of the filename so changing it triggers a fresh extraction
+    instead of silently reusing a cache built for a different window."""
+    return Path(cfg["paths"]["cache_dir"]) / f"vasopressor_events_{vasopressor_window_hours(cfg)}h.parquet"
 
 
 def require_mimic_layout(cfg: dict) -> None:

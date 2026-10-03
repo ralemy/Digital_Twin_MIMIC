@@ -106,7 +106,7 @@ llm:
   #                                             # num_ctx / KV cache at concurrency > 1 — test before committing
   model: "qwen2.5:32b-instruct-q8_0"
   temperature: 0.2
-  max_tokens: 600                  # more headroom now that generation is faster per token on this GPU
+  max_tokens: 1536   # JSON for 5 variables x 24 h is ~700-900 tokens (Qwen tokenizes numbers digit by digit); 600 truncated every forecast (job 23141406)
   request_timeout_s: 180           # a larger model is slower per call even though it's faster per token overall
   num_ctx: 8192                    # room for a longer similarity-context prompt (see similarity_agent.k_neighbors)
 

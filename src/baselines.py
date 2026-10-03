@@ -14,11 +14,14 @@ if available, i.e. the 1080 Ti) with no external services.
 """
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
 
+from checkpoint import atomic_path
 from common import get_logger
 from harmonization_agent import summarize_observation
 
@@ -83,9 +86,22 @@ class GBMBaseline:
         self.models: dict[tuple[str, int], HistGradientBoostingRegressor] = {}
         self.residual_std: dict[tuple[str, int], float] = {}
 
-    def fit(self, train_tensors: dict[int, dict]) -> GBMBaseline:
+    def fit(self, train_tensors: dict[int, dict], checkpoint_path: Path | None = None) -> GBMBaseline:
+        """With checkpoint_path, the regressors are saved after each variable
+        and, if the file exists from an interrupted run, the variables already
+        fitted there are loaded instead of refitted."""
+        done_vars: set[str] = set()
+        if checkpoint_path is not None and checkpoint_path.exists():
+            with open(checkpoint_path, "rb") as f:
+                state = pickle.load(f)
+            self.models, self.residual_std, done_vars = state["models"], state["residual_std"], set(state["done_variables"])
+            log.info("GBM baseline: resuming from checkpoint, %d/%d variables already fitted.",
+                     len(done_vars), len(self.variables))
+
         X = np.stack([_summary_features(t["obs"], self.variables) for t in train_tensors.values()])
         for v_idx, var in enumerate(self.variables):
+            if var in done_vars:
+                continue
             for h in range(self.horizon_hours):
                 y = np.array([t["horizon"][h, v_idx] for t in train_tensors.values()])
                 mask = ~np.isnan(y)
@@ -96,6 +112,12 @@ class GBMBaseline:
                 self.models[(var, h)] = model
                 preds = model.predict(X[mask])
                 self.residual_std[(var, h)] = float(np.std(y[mask] - preds)) or 1.0
+            done_vars.add(var)
+            if checkpoint_path is not None:
+                with atomic_path(checkpoint_path) as tmp:
+                    with open(tmp, "wb") as f:
+                        pickle.dump({"models": self.models, "residual_std": self.residual_std,
+                                     "done_variables": sorted(done_vars)}, f)
         log.info("GBM baseline trained: %d (variable, hour) models.", len(self.models))
         return self
 
@@ -164,7 +186,13 @@ class LSTMBaseline:
         filled = np.nan_to_num(arr, nan=0.0)
         return torch.tensor(filled, dtype=torch.float32)
 
-    def fit(self, train_tensors: dict[int, dict], epochs: int = 100, lr: float = 1e-3) -> LSTMBaseline:
+    def fit(self, train_tensors: dict[int, dict], epochs: int = 100, lr: float = 1e-3,
+            checkpoint_path: Path | None = None, checkpoint_every: int = 20) -> LSTMBaseline:
+        """With checkpoint_path, the weights and optimizer state are saved every
+        `checkpoint_every` epochs (and after the last) and, if the file exists
+        from an interrupted run, training continues from its epoch. The
+        normalization stats are recomputed from the same training data, so
+        they match."""
         obs_stack = np.stack([t["obs"] for t in train_tensors.values()])
         hor_stack = np.stack([t["horizon"] for t in train_tensors.values()])
 
@@ -181,8 +209,16 @@ class LSTMBaseline:
         Y_mask = torch.tensor(~np.isnan(hor_norm), dtype=torch.float32).to(self.device)
 
         opt = torch.optim.Adam(self.model.parameters(), lr=lr)
+        start_epoch = 0
+        if checkpoint_path is not None and checkpoint_path.exists():
+            state = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+            self.model.load_state_dict(state["model"])
+            opt.load_state_dict(state["optimizer"])
+            start_epoch = int(state["epoch"])
+            log.info("LSTM baseline: resuming from checkpoint at epoch %d/%d.", start_epoch, epochs)
+
         self.model.train()
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             opt.zero_grad()
             pred = self.model(X)
             loss = ((pred - Y) ** 2 * Y_mask).sum() / Y_mask.sum().clamp(min=1)
@@ -190,6 +226,10 @@ class LSTMBaseline:
             opt.step()
             if (epoch + 1) % 10 == 0:
                 log.info("LSTM baseline epoch %d/%d, masked MSE loss=%.4f", epoch + 1, epochs, loss.item())
+            if checkpoint_path is not None and ((epoch + 1) % checkpoint_every == 0 or epoch + 1 == epochs):
+                with atomic_path(checkpoint_path) as tmp:
+                    torch.save({"model": self.model.state_dict(), "optimizer": opt.state_dict(),
+                                "epoch": epoch + 1}, tmp)
 
         with torch.no_grad():
             pred = self.model(X).cpu().numpy()

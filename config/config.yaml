@@ -80,7 +80,7 @@ llm:
   ollama_host: "http://127.0.0.1:11434"
   model: "llama3.1:8b-instruct-q4_K_M"   # any local, quantized, open-weight instruct model works
   temperature: 0.2
-  max_tokens: 400
+  max_tokens: 1536   # JSON for 5 variables x 24 h is ~700-900 tokens (Qwen tokenizes numbers digit by digit); 600 truncated every forecast (job 23141406)
   request_timeout_s: 120
   num_ctx: 4096
 

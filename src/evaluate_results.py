@@ -10,6 +10,10 @@ RQ2: full_pipeline vs full_pipeline_no_critic, primary outcome =
 RQ3: stratifies the test cohort into stable / deteriorating subgroups
      (new vasopressor initiation within the horizon window) and recomputes
      the primary metrics within each subgroup.
+Model comparisons (exploratory, only when `conditions` uses LLM variants,
+     e.g. full_pipeline@medgemma): for each LLM condition run with more than
+     one model, every pair of models is compared on the same patients with
+     the same paired sMAPE test and the plausibility violation rate.
 
 All headline metrics are reported with bootstrap 95% confidence intervals,
 resampling PATIENTS (not individual observations) with replacement, per
@@ -28,7 +32,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 
-from common import get_logger, load_config, parse_step_args
+from common import LLM_CONDITIONS, get_logger, load_config, parse_step_args, split_condition, vasopressor_cache_path
 from metrics import smape
 
 log = get_logger("evaluate_results")
@@ -112,12 +116,36 @@ def plausibility_violation_comparison(name_a: str, name_b: str, data_a: dict, da
     }
 
 
+def model_variant_comparisons(cfg: dict, results_dir: Path) -> list[dict]:
+    """Pairwise model comparisons within each LLM condition, e.g.
+    full_pipeline@gemma3 vs full_pipeline@medgemma, in `conditions` order."""
+    by_base: dict[str, list[str]] = {}
+    for condition in cfg["conditions"]:
+        base, _ = split_condition(condition)
+        if base in LLM_CONDITIONS:
+            by_base.setdefault(base, []).append(condition)
+
+    out = []
+    for base, conditions in by_base.items():
+        if len(conditions) < 2:
+            continue
+        loaded = {c: load_raw(results_dir, c) for c in conditions}
+        available = [c for c in conditions if loaded[c] is not None]
+        for i, name_a in enumerate(available):
+            for name_b in available[i + 1:]:
+                result = compare_conditions(name_a, name_b, loaded[name_a], loaded[name_b], cfg)
+                result["plausibility"] = plausibility_violation_comparison(
+                    name_a, name_b, loaded[name_a], loaded[name_b], cfg)
+                out.append(result)
+    return out
+
+
 def rq3_subgroup_analysis(cfg: dict, results_dir: Path) -> dict | None:
     work_dir = Path(cfg["paths"]["work_dir"])
-    vaso_path = Path(cfg["paths"]["cache_dir"]) / "vasopressor_events.parquet"
+    vaso_path = vasopressor_cache_path(cfg)
     cohort_path = work_dir / "cohort.parquet"
     if not vaso_path.exists():
-        log.warning("No vasopressor_events.parquet found; RQ3 subgroup analysis skipped.")
+        log.warning("No %s found; RQ3 subgroup analysis skipped.", vaso_path.name)
         return None
 
     cohort = pd.read_parquet(cohort_path)
@@ -188,6 +216,10 @@ def main(config_path: str) -> None:
     rq3 = rq3_subgroup_analysis(cfg, results_dir)
     if rq3 is not None:
         output["RQ3_deterioration_subgroup"] = rq3
+
+    model_comparisons = model_variant_comparisons(cfg, results_dir)
+    if model_comparisons:
+        output["model_variant_comparisons"] = model_comparisons
 
     out_path = results_dir / "statistical_analysis.json"
     out_path.write_text(json.dumps(output, indent=2, default=str))

@@ -4,9 +4,9 @@ locally with DuckDB running directly over the raw PhysioNet .csv/.csv.gz files
 under ~/mimic-iv/{hosp,icu}. No data leaves the machine at any point.
 
 Inclusion criteria (Chapter 5, Section 5.3):
-  - first ICU stay per patient
+  - first ICU stay per patient that lasted >= 48 hours (earlier, shorter
+    stays are skipped; patients with no such stay are excluded)
   - age >= 18 at admission
-  - ICU stay length >= 48 hours
   - >=50% of the tight panel's expected measurements populated in the
     observation + horizon window
 
@@ -15,7 +15,9 @@ Outputs (written under <work_dir>):
                                         restricted to the first N = observation + horizon hours
                                         of each stay
   cache/labevents_panel_<N>h.parquet    filtered raw labevents rows (lactate), same window
-  cache/vasopressor_events.parquet  filtered inputevents rows used for RQ3 labels
+  cache/vasopressor_events_<M>h.parquet  filtered inputevents rows used for RQ3 labels,
+                                        restricted to the first M = observation + lookahead
+                                        hours of each stay
   cohort.parquet                    one row per eligible stay_id, with split assignment
   panel_long.parquet                long-format (stay_id, variable, hour, value) resampled panel
 
@@ -41,6 +43,8 @@ from common import (
     load_config,
     parse_step_args,
     require_mimic_layout,
+    vasopressor_cache_path,
+    vasopressor_window_hours,
 )
 
 log = get_logger("extract_cohort")
@@ -77,6 +81,9 @@ def build_eligible_stays(con: duckdb.DuckDBPyConnection, cfg: dict) -> pd.DataFr
     c = cfg["cohort"]
     first_stay_clause = "AND rn = 1" if c["first_stay_only"] else ""
 
+    # The LOS filter sits inside `stays` (WHERE runs before the window
+    # function), so rn = 1 picks each patient's first stay of >= min hours
+    # rather than dropping patients whose very first stay was too short.
     query = f"""
         WITH stays AS (
             SELECT
@@ -85,6 +92,7 @@ def build_eligible_stays(con: duckdb.DuckDBPyConnection, cfg: dict) -> pd.DataFr
                 date_diff('hour', s.intime, s.outtime) AS los_hours,
                 row_number() OVER (PARTITION BY s.subject_id ORDER BY s.intime) AS rn
             FROM read_csv_auto(?, ignore_errors=true) s
+            WHERE date_diff('hour', s.intime, s.outtime) >= {c['min_icu_stay_hours']}
         ),
         pts AS (
             SELECT subject_id, anchor_age, anchor_year
@@ -100,8 +108,7 @@ def build_eligible_stays(con: duckdb.DuckDBPyConnection, cfg: dict) -> pd.DataFr
         FROM stays st
         JOIN pts p USING (subject_id)
         JOIN adm a USING (hadm_id)
-        WHERE st.los_hours >= {c['min_icu_stay_hours']}
-          AND p.anchor_age >= {c['min_age_years']}
+        WHERE p.anchor_age >= {c['min_age_years']}
           {first_stay_clause}
     """
     df = con.execute(query, [str(icustays_path), str(patients_path), str(admissions_path)]).fetchdf()
@@ -187,10 +194,14 @@ def cache_panel_raw(con: duckdb.DuckDBPyConnection, cfg: dict, eligible_stays: p
 
 def cache_vasopressor_events(con: duckdb.DuckDBPyConnection, cfg: dict, eligible_stays: pd.DataFrame) -> None:
     """Best-effort extraction of vasopressor administration events for the RQ3
-    deterioration label. Not required for RQ1/RQ2; failures here are logged and
-    skipped rather than fatal."""
-    cache_dir = Path(cfg["paths"]["cache_dir"])
-    out_path = cache_dir / "vasopressor_events.parquet"
+    deterioration label. Not required for RQ1/RQ2; any failure here is logged
+    and skipped rather than fatal.
+
+    Only starts between intime and intime + observation + lookahead hours
+    (inclusive) are kept: the latest point evaluate_results.py looks at.
+    Starting at intime rather than at the observation cutoff keeps earlier
+    vasopressor use available, e.g. to tell new starts from ongoing ones."""
+    out_path = vasopressor_cache_path(cfg)
     if out_path.exists():
         log.info("Reusing cached %s", out_path)
         return
@@ -201,29 +212,40 @@ def cache_vasopressor_events(con: duckdb.DuckDBPyConnection, cfg: dict, eligible
         log.warning("Skipping vasopressor extraction (RQ3 subgroup will be unavailable): %s", e)
         return
 
-    labels = cfg["deterioration_labels"]["vasopressor_itemid_labels"]
-    like_clauses = " OR ".join(["label ILIKE '%' || ? || '%'" for _ in labels])
-    vaso_itemids = con.execute(
-        f"SELECT DISTINCT itemid FROM read_csv_auto(?, ignore_errors=true) WHERE {like_clauses}",
-        [str(d_items_path)] + labels,
-    ).fetchdf()["itemid"].tolist()
+    try:
+        labels = cfg["deterioration_labels"]["vasopressor_itemid_labels"]
+        like_clauses = " OR ".join(["label ILIKE '%' || ? || '%'" for _ in labels])
+        vaso_itemids = con.execute(
+            f"SELECT DISTINCT itemid FROM read_csv_auto(?, ignore_errors=true) WHERE {like_clauses}",
+            [str(d_items_path)] + labels,
+        ).fetchdf()["itemid"].tolist()
 
-    if not vaso_itemids:
-        log.warning("No vasopressor itemids resolved; RQ3 subgroup will be unavailable.")
-        return
+        if not vaso_itemids:
+            log.warning("No vasopressor itemids resolved; RQ3 subgroup will be unavailable.")
+            return
 
-    stay_ids = eligible_stays["stay_id"].tolist()
-    con.register("vaso_itemids_df", pd.DataFrame({"itemid": vaso_itemids}))
-    con.register("vaso_stay_ids_df", pd.DataFrame({"stay_id": stay_ids}))
-    con.execute(f"""
-        COPY (
-            SELECT stay_id, itemid, starttime
-            FROM read_csv_auto('{inputevents_path}', ignore_errors=true)
-            WHERE itemid IN (SELECT itemid FROM vaso_itemids_df)
-              AND stay_id IN (SELECT stay_id FROM vaso_stay_ids_df)
-        ) TO '{out_path}' (FORMAT PARQUET)
-    """)
-    log.info("Wrote %s", out_path)
+        window_h = vasopressor_window_hours(cfg)
+        con.register("vaso_itemids_df", pd.DataFrame({"itemid": vaso_itemids}))
+        con.register("vaso_stays_df", eligible_stays[["stay_id", "intime"]])
+        con.execute(f"""
+            COPY (
+                SELECT ie.stay_id, ie.itemid, ie.starttime
+                FROM read_csv_auto('{inputevents_path}', ignore_errors=true) ie
+                WHERE ie.itemid IN (SELECT itemid FROM vaso_itemids_df)
+                  AND EXISTS (
+                      SELECT 1 FROM vaso_stays_df vs
+                      WHERE vs.stay_id = ie.stay_id
+                        AND CAST(ie.starttime AS TIMESTAMP) >= vs.intime
+                        AND CAST(ie.starttime AS TIMESTAMP) <= vs.intime + INTERVAL {window_h} HOUR
+                  )
+            ) TO '{out_path}' (FORMAT PARQUET)
+        """)
+        log.info("Wrote %s", out_path)
+    except Exception as e:
+        # A half-written file would be reused as a valid cache on the next run.
+        out_path.unlink(missing_ok=True)
+        log.warning("Vasopressor extraction failed (RQ3 subgroup will be unavailable): %s: %s",
+                    type(e).__name__, e)
 
 
 def resample_and_filter(cfg: dict, eligible_stays: pd.DataFrame, item_mapping: dict) -> tuple[pd.DataFrame, pd.DataFrame]:

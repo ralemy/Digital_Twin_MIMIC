@@ -94,6 +94,39 @@ the 1080 Ti; scale up `max_patients` once you've checked the results look
 sane. Raw forecast arrays and per-condition metric summaries are written to
 `~/mimic-iv-twin-work/results/`.
 
+**Resuming a stopped run.** Progress is checkpointed under
+`<work_dir>/checkpoints/run_experiment/` as it goes: the GBM after each
+variable, the LSTM every `baselines.lstm_checkpoint_every_epochs` epochs, and
+each condition after every `performance.checkpoint_batch_size` test patients
+(default 32). If the run is stopped (a Slurm time limit, Ctrl+C, a crash),
+run the same command again and it continues where it left off, losing at
+most one batch; finished conditions aren't re-run.
+`all_conditions_summary.csv` is rewritten after each finished condition, so
+partial results are always on disk. Add `--full-refresh` to delete the
+checkpoints and start from scratch:
+
+```bash
+python src/run_experiment.py --config-file config/config.yaml --full-refresh
+```
+
+Changing the config or cohort that a checkpoint depends on (e.g. the
+variables, cohort settings, an LLM's model/temperature) stops the run with a
+message instead of mixing old and new results. Changes to prompts or code
+are **not** detected — use `--full-refresh` after those. On Nibi, see the
+header of `jobs/step3_run_experiment_nibi.sh` for resubmitting or chaining
+jobs.
+
+**Comparing LLMs (exploratory).** Any LLM condition (`single_model_llm`,
+`full_pipeline*`) can run with a different model by appending `@<variant>`,
+e.g. `full_pipeline@medgemma`, where the variant is defined under
+`llm.variants` in the config (it inherits every `llm` key and overrides what
+it lists, usually just `model`). Variants not named in `conditions` are
+ignored. `config/config_nibi_lean.yaml` defines `gemma3` and its
+medically-trained derivative `medgemma`, with their conditions commented
+out. `all_conditions_summary.csv` includes an `llm_fallback_rate` column:
+the share of patients whose LLM output couldn't be parsed and was replaced
+by the naive forecast. Check it before comparing models' accuracy.
+
 ## 5. Statistical analysis
 
 ```bash
@@ -104,6 +137,9 @@ Produces the RQ1 (orchestration vs. single-model), RQ2 (critic ablation:
 plausibility-violation-rate reduction + accuracy trade-off check), and RQ3
 (stable vs. deteriorating subgroup) analyses described in Chapter 5, Section
 5.6, with bootstrap 95% confidence intervals computed by resampling patients.
+If the run used LLM variants, it also adds `model_variant_comparisons`:
+every pair of models within the same LLM condition, compared with the same
+paired test plus plausibility violation rates.
 Writes `~/mimic-iv-twin-work/results/statistical_analysis.json`.
 
 ## Scaling up on better hardware
@@ -240,10 +276,10 @@ argument, so the same script runs either scope — omit it and it defaults
 to `config/config_nibi_lean.yaml` (the HREB-approved scope):
 
 ```bash
-# Set once per shell (sbatch passes these through to every job below) —
-# see "Paths the job scripts need" further down for what each one is:
-export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1
-export OLLAMA_MODELS=/home/ralemy/projects/def-roudsari/ollama_local/models
+# Submit from the project directory. Every job reads its settings from
+# ~/.config/dt_profile.yml (see "Your profile" further down); add
+# --profile <file> to any job's arguments to use a different one:
+cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
 
 # 0. Pre-flight — no GPU, no Ollama, no real data needed:
 sbatch jobs/smoke_test_nibi.sh
@@ -289,44 +325,68 @@ the public "no more than 14 cores per GPU" ratio, so check
 `sinfo -o "%N %c %m %G"` once you have a session and raise the `#SBATCH`
 lines if more is actually available.
 
-**Paths the job scripts need, read from the environment.** All five
-`jobs/*.sh` scripts read the project directory from `$AGENTIC_DT_PRJ` (and
-`jobs/step3_run_experiment_nibi.sh` additionally reads the Ollama model
-store from `$OLLAMA_MODELS` — the standard Ollama env var name, so the same
-export also works for a manual `ollama pull`/`ollama serve`). Neither is
-hardcoded in the scripts, so if this codebase or the model store ever move,
-nothing in `jobs/` needs editing — just export the new values before
-`sbatch`. Each script fails fast with a clear message if its required
-variable isn't set, rather than silently doing the wrong thing. `sbatch`
-passes the submitting shell's environment through by default, so exporting
-these once per shell session (or once in `~/.bashrc`) is enough:
+**Your profile: `~/.config/dt_profile.yml`.** Jobs don't read settings from
+environment variables you export: every `jobs/*.sh` script reads them from
+one private YAML file, your profile. Create it once from the sample and fill
+it in:
 
 ```bash
-export AGENTIC_DT_PRJ=/home/ralemy/projects/def-roudsari/digital_twin/exp1
-export OLLAMA_MODELS=/home/ralemy/projects/def-roudsari/ollama_local/models
+cp config/profile.sample.yml ~/.config/dt_profile.yml
+chmod 600 ~/.config/dt_profile.yml     # it holds your PhysioNet password
+nano ~/.config/dt_profile.yml          # or any editor
 ```
 
-Within `$AGENTIC_DT_PRJ`, the scripts expect:
+| Profile key | What it is | Used by |
+|---|---|---|
+| `paths.project_dir` | this repo (`.venv`, `src/`, `config/`); defaults to the repo you submit from | all jobs |
+| `paths.data_root` | where data and results live — the configs' `$PROJECT` (`$PROJECT/mimic-iv`, `$PROJECT/mimic-iv-twin-work`, ...); defaults to `project_dir` | all jobs |
+| `paths.ollama_models` | the Ollama model store | prep2, prep3, step 3 |
+| `paths.ollama_bin` | directory with the `ollama` binary | prep2, prep3, step 3 |
+| `physionet.username` / `password` | PhysioNet account credentialed for MIMIC-IV | prep1 only |
+
+Keep the profile private: it lives in your home directory, outside this
+repo, and must not be committed or copied to `/project` (shared with the
+group). A job refuses a profile that holds a password but is readable by
+anyone else (`chmod 600` fixes it), and the password is never exported to
+the job's child processes — prep1 writes it only to a temporary mode-600
+`wgetrc` that is deleted when the job ends.
+
+To use a different profile (another data root, another model store, a
+colleague's account), pass `--profile <file>` anywhere in the job's
+arguments; everything else is passed to the job as before:
+
+```bash
+cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+sbatch jobs/step3_run_experiment_nibi.sh --profile ~/.config/dt_profile_test.yml config/config_nibi_lean.yaml
+```
+
+The profile always wins over environment variables of the same name (e.g.
+old `export AGENTIC_DT_PRJ=`/`OLLAMA_MODELS=`/`PROJECT=` lines in
+`~/.bashrc`), so a job's settings come from one place. Jobs load it through
+`jobs/load_profile.sh`, which they find via the directory `sbatch` was run
+from — so always submit from the project directory. Each job prints the
+profile it used and the resolved paths at the top of its `.out` file.
+
+Within `paths.project_dir`, the scripts expect:
 
 - `.venv` — the Python virtualenv every script activates
-  (`source "$AGENTIC_DT_PRJ/.venv/bin/activate"`)
+  (`<project_dir>/.venv/bin/activate`)
 - `src/`, `config/` — this repository's `src/` and `config/` as checked out,
   unchanged
 
-`$OLLAMA_MODELS` is deliberately a separate variable rather than a path
-under `$AGENTIC_DT_PRJ`, so the multi-GB model weights aren't duplicated
+`paths.ollama_models` is deliberately separate from `project_dir`, so the multi-GB model weights aren't duplicated
 per experiment directory if you ever have more than one.
 
-**One-time setup, before the first `sbatch`** (all five scripts share this;
-do it with both exports above already set in your shell):
+**One-time setup, before the first `sbatch`** (all scripts share this;
+create your profile first, as above):
 
-1. **Build the Python venv once, on a login node, inside `$AGENTIC_DT_PRJ`**
+1. **Build the Python venv once, on a login node, inside `project_dir`**
    — compute nodes typically have no internet access, so installing
    packages has to happen where a network path to PyPI/the Alliance wheel
    mirror exists:
    ```bash
    module load python/3.11
-   cd "$AGENTIC_DT_PRJ"
+   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1   # your paths.project_dir
    virtualenv --no-download .venv
    source .venv/bin/activate
    pip install --no-index --upgrade pip
@@ -335,23 +395,23 @@ do it with both exports above already set in your shell):
    ```
    If a package isn't available in the Alliance wheel mirror, drop
    `--no-index` for that one `pip install` only.
-2. **Pull the Ollama model once, on a login node**, for the same reason —
-   `jobs/step3_run_experiment_nibi.sh` assumes the model is already present
-   under `$OLLAMA_MODELS` and aborts with a clear message rather than
-   trying (and failing) to pull it mid-job:
+2. **Download the Ollama models the config needs** (the default model plus
+   any `llm.variants` its `conditions` use, creating each `alias`) into
+   `paths.ollama_models` — `jobs/step3_run_experiment_nibi.sh` doesn't pull
+   models and aborts with a clear message if one is missing:
    ```bash
-   ollama pull qwen2.5:32b-instruct-q8_0
+   sbatch jobs/prep2_download_models.sh config/config_nibi_lean.yaml
    ```
-3. **Place the MIMIC-IV export under `$PROJECT/mimic-iv/{hosp,icu}`**
-   (`config_nibi_*.yaml` resolve `mimic_root`/`work_dir` via the `$PROJECT`
-   env var Alliance itself sets in the job environment — a different
-   variable from `$AGENTIC_DT_PRJ` above), not `$HOME` (50GB quota, and not
-   persistent in the way this needs) — `$PROJECT` persists (unlike
-   `$SCRATCH`, purged after 60 days of inactivity). Before uploading
-   anything, confirm Nibi's storage meets PhysioNet's Data Use Agreement
+3. **Download MIMIC-IV into `<data_root>/mimic-iv/{hosp,icu}`** with
+   `sbatch jobs/prep1_download_mimic_nibi.sh` (it uses the PhysioNet
+   credentials from your profile), then check it with
+   `sbatch jobs/verify_mimic_nibi.sh`. `config_nibi_*.yaml` resolve
+   `mimic_root`/`work_dir` from `$PROJECT`, which jobs set to your profile's
+   `data_root`. Keep it out of `$HOME` (50GB quota) and prefer `/project`
+   over `$SCRATCH` (purged after 60 days of inactivity). Before
+   downloading, confirm Nibi's storage meets PhysioNet's Data Use Agreement
    requirements for where credentialed MIMIC-IV data may be stored — that
-   check is on you, the
-   config/job files don't and can't verify it.
+   check is on you; the config/job files don't and can't verify it.
 
 Both `config_nibi_*.yaml` files carry the same header warnings inline;
 read them before your first real submission, not just this section.

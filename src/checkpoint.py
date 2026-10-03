@@ -1,0 +1,225 @@
+"""
+Checkpoints for src/run_experiment.py, so a run stopped part-way (Slurm time
+limit, preemption, node failure, Ctrl+C) resumes where it left off when it's
+started again, instead of redoing hours of LLM calls.
+
+Everything lives under <work_dir>/checkpoints/run_experiment/:
+
+    models/gbm/        gbm.pkl — regressors fitted so far, saved after each variable
+    models/lstm/       lstm.pt — weights + optimizer state, saved every N epochs
+    conditions/<condition>/
+        batch_00000.npz, batch_00001.npz, ...
+                       predictions for one batch of test patients each,
+                       saved as soon as the batch finishes
+        summary_rows.json
+                       the condition's rows of all_conditions_summary.csv,
+                       written last — its presence marks the condition done
+
+Each of those directories also holds a fingerprint.json: a hash of the config
+values and train/test patient ids its contents depend on. Resuming with a
+different config or cohort for that piece raises CheckpointMismatch rather
+than silently mixing results from two setups; start over with
+`run_experiment.py --full-refresh`. Prompt or code changes are NOT detected —
+use --full-refresh after changing those too.
+
+Every file is written to a temporary name and renamed into place, so a job
+killed mid-write leaves either the old file or the new one, never half a file.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import socket
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+
+import numpy as np
+
+from common import LLM_CONDITIONS, cfg_for_llm_variant, get_logger, split_condition
+
+log = get_logger("checkpoint")
+
+
+class CheckpointMismatch(RuntimeError):
+    pass
+
+
+@contextmanager
+def atomic_path(path: Path):
+    """Yield a temporary path next to `path`; rename it onto `path` only if
+    the block finishes without an exception."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        yield tmp
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _hash(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _ids_hash(ids) -> str:
+    return _hash(sorted(int(i) for i in ids))
+
+
+def model_fingerprint(cfg: dict, model: str, train_ids) -> dict:
+    """What a fitted baseline depends on: the panel, the cohort settings, the
+    exact training patients and (for the LSTM) its training settings."""
+    fp = {"model": model, "variables": cfg["variables"], "cohort": cfg["cohort"],
+          "train_ids": _ids_hash(train_ids)}
+    if model == "lstm":
+        fp["lstm"] = {k: cfg["baselines"].get(k) for k in ("lstm_hidden_size", "lstm_epochs")}
+    return fp
+
+
+def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids) -> dict:
+    """What a condition's predictions depend on. Baseline conditions depend on
+    their fitted model; LLM conditions on the (variant's) llm settings plus
+    the similarity and critic agents' settings."""
+    base, variant = split_condition(condition)
+    fp = {"condition": condition, "variables": cfg["variables"], "cohort": cfg["cohort"],
+          "train_ids": _ids_hash(train_ids), "test_ids": _ids_hash(test_ids)}
+    if base == "lstm":
+        fp["lstm"] = model_fingerprint(cfg, "lstm", train_ids)["lstm"]
+    if base in LLM_CONDITIONS:
+        fp["llm"] = {k: v for k, v in cfg_for_llm_variant(cfg, variant)["llm"].items() if k != "variants"}
+        fp["similarity_agent"] = cfg["similarity_agent"]
+        fp["critic_agent"] = cfg["critic_agent"]
+    return fp
+
+
+class CheckpointTakenOver(RuntimeError):
+    pass
+
+
+class RunCheckpoint:
+    """The checkpoint directory of one run_experiment.py configuration.
+
+    claim() marks this run as the directory's owner (owner.json); every save
+    checks the mark first. If another run has since claimed the directory
+    (e.g. a resubmitted job, or a --full-refresh started before the previous
+    job had fully stopped), the old run raises CheckpointTakenOver instead of
+    writing into the new run's checkpoints."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.run_id: str | None = None
+
+    def claim(self) -> None:
+        self.run_id = uuid.uuid4().hex
+        self.root.mkdir(parents=True, exist_ok=True)
+        owner = {"run_id": self.run_id, "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+                 "host": socket.gethostname(), "pid": os.getpid()}
+        with atomic_path(self.root / "owner.json") as tmp:
+            tmp.write_text(json.dumps(owner, indent=2))
+
+    def check_owner(self) -> None:
+        if self.run_id is None:          # not claimed (e.g. tests): no ownership checks
+            return
+        try:
+            current = json.loads((self.root / "owner.json").read_text()).get("run_id")
+        except (OSError, ValueError):
+            current = None
+        if current != self.run_id:
+            raise CheckpointTakenOver(
+                f"Another run has taken over the checkpoints in {self.root} "
+                f"(owner.json changed) — stopping this run without saving.")
+
+    def exists(self) -> bool:
+        return self.root.is_dir() and any(self.root.iterdir())
+
+    def clear(self) -> None:
+        if self.root.exists():
+            shutil.rmtree(self.root)
+
+    def _bind(self, rel: str, fingerprint: dict) -> Path:
+        """The directory for one checkpointed piece, created with its
+        fingerprint, or checked against the fingerprint already there."""
+        d = self.root / rel
+        fp_path = d / "fingerprint.json"
+        digest = _hash(fingerprint)
+        if fp_path.exists():
+            saved = json.loads(fp_path.read_text())
+            if saved.get("digest") != digest:
+                raise CheckpointMismatch(
+                    f"The checkpoint in {d} was made with a different config or cohort than "
+                    f"this run's. Rerun with --full-refresh to start over, or restore the "
+                    f"config it was made with."
+                )
+        else:
+            d.mkdir(parents=True, exist_ok=True)
+            with atomic_path(fp_path) as tmp:
+                tmp.write_text(json.dumps({"digest": digest, "fingerprint": fingerprint},
+                                          indent=2, default=str))
+        return d
+
+    def model_path(self, model: str, fingerprint: dict, filename: str) -> Path:
+        self.check_owner()
+        return self._bind(f"models/{model}", fingerprint) / filename
+
+    def condition(self, condition: str, fingerprint: dict) -> ConditionCheckpoint:
+        self.check_owner()
+        return ConditionCheckpoint(self._bind(f"conditions/{condition}", fingerprint), self.check_owner)
+
+
+class ConditionCheckpoint:
+    """Per-batch predictions and the finished summary rows of one condition."""
+
+    def __init__(self, directory: Path, check_owner=lambda: None):
+        self.dir = directory
+        self._check_owner = check_owner
+
+    def _batch_path(self, index: int) -> Path:
+        return self.dir / f"batch_{index:05d}.npz"
+
+    def load_batch(self, index: int, stay_ids: list[int]) -> dict | None:
+        """The saved predictions for batch `index`, or None if it wasn't saved
+        or was saved for different patients (e.g. checkpoint_batch_size
+        changed since), in which case it is recomputed."""
+        path = self._batch_path(index)
+        if not path.exists():
+            return None
+        with np.load(path) as z:
+            if z["stay_ids"].tolist() != list(stay_ids):
+                return None
+            return {k: z[k] for k in ("y_pred", "y_lower", "y_upper")} | {
+                "violations": int(z["violations"]), "fallbacks": int(z["fallbacks"])}
+
+    def save_batch(self, index: int, stay_ids: list[int], batch: dict) -> None:
+        self._check_owner()
+        with atomic_path(self._batch_path(index)) as tmp:
+            with open(tmp, "wb") as f:
+                np.savez(f, stay_ids=np.array(stay_ids),
+                         y_pred=batch["y_pred"], y_lower=batch["y_lower"], y_upper=batch["y_upper"],
+                         violations=batch["violations"], fallbacks=batch["fallbacks"])
+
+    def load_rows(self, n_batches: int) -> list[dict] | None:
+        """The condition's summary rows if it already finished, else None.
+        A finished condition whose batch files are no longer all present
+        (e.g. a bad batch was deleted by hand to have it recomputed) counts
+        as unfinished, so the missing batches are recomputed and the summary
+        rebuilt from the full set."""
+        path = self.dir / "summary_rows.json"
+        if not path.exists():
+            return None
+        missing = [i for i in range(n_batches) if not self._batch_path(i).exists()]
+        if missing:
+            log.info("%s: summary exists but batch(es) %s are missing — recomputing them.",
+                     self.dir.name, missing)
+            return None
+        return json.loads(path.read_text())
+
+    def save_rows(self, rows: list[dict]) -> None:
+        self._check_owner()
+        with atomic_path(self.dir / "summary_rows.json") as tmp:
+            tmp.write_text(json.dumps(rows, indent=2, default=_to_json))
+
+
+def _to_json(o):
+    """numpy scalars (np.float32 etc.) aren't JSON-serializable by default."""
+    return o.item() if hasattr(o, "item") else str(o)

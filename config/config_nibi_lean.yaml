@@ -49,6 +49,12 @@ performance:
   duckdb_memory_limit_gb: 120      # leaves ~80 GB of step 2's 192000M Slurm allocation for pandas/Python; DuckDB spills to $SLURM_TMPDIR past this
   llm_max_concurrent_requests: 4   # must match OLLAMA_NUM_PARALLEL in jobs/run_lean_nibi.sh
   batch_predict_baselines: true
+  # run_experiment.py checkpoints each condition every this many test
+  # patients, so a run stopped by the Slurm time limit loses at most one
+  # batch when resubmitted. Smaller = less lost work, more small files.
+  # The step 3 log prints the time per batch for LLM conditions — use it to
+  # size this and the job's --time.
+  checkpoint_batch_size: 32
 
 cohort:
   min_age_years: 18
@@ -104,10 +110,43 @@ llm:
   backend: "ollama"
   ollama_host: "http://127.0.0.1:11434"
   model: "qwen2.5:32b-instruct-q8_0"   # ~34GB weights — comfortable on an 80GB H100, same model as config_highend.yaml
+  alias: "qwen2.5:32b"                     # optional short name for the model, used in results and pre-flight checks
+  # Optional `alias`, here or in any variant: a short local name for `model`,
+  # created once on a login node with `ollama cp <model> <alias>`. When set,
+  # the pipeline calls Ollama by the alias (and the job's pre-flight check
+  # looks for it in `ollama list`); results record it in the llm_model column.
+  # `model` stays the tag to pull. A variant that sets its own `model` does
+  # not inherit the alias above.
+  # alias: "qwen2.5:32b"
   temperature: 0.2
-  max_tokens: 600
+  max_tokens: 1536   # JSON for 5 variables x 24 h is ~700-900 tokens (Qwen tokenizes numbers digit by digit); 600 truncated every forecast (job 23141406)
   request_timeout_s: 180
   num_ctx: 8192
+  # Alternative models for the exploratory model comparison. A variant is
+  # used by appending '@<name>' to an LLM condition in `conditions` below
+  # (e.g. full_pipeline@medgemma); it inherits every llm key above and
+  # overrides only what it lists. Variants not named in `conditions` are
+  # ignored, so these definitions are harmless until you enable them.
+  # Pull each model on a login node first (see jobs/step3_run_experiment_nibi.sh).
+  # gemma3 is medgemma's general-purpose base model at the same quantization,
+  # so gemma3 vs medgemma isolates the effect of medical training.
+  variants:
+    gemma3:
+      model: "gemma3:27b"                                       # Q4_K_M, ~17GB
+    medgemma:
+      # Google's MedGemma 27B text model is gated on Hugging Face (accept the
+      # Health AI Developer Foundations terms first). VERIFY this tag pulls
+      # before enabling: `ollama pull hf.co/unsloth/medgemma-27b-text-it-GGUF:Q4_K_M`
+      model: "hf.co/unsloth/medgemma-27b-text-it-GGUF:Q4_K_M"   # ~17GB
+      alias: "medgemma:27b"
+    llama_Med42_70b:
+      # M42 Health's Llama3-Med42-70B (clinical fine-tune of Llama 3 70B),
+      # community GGUF conversion. Set up once on a login node:
+      #   ollama pull hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M
+      #   ollama cp hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M med42:70b
+      # jobs/prep3_med42_nibi.sh checks it loads fully onto one H100.
+      model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
+      alias: "med42:70b"
 
 similarity_agent:
   k_neighbors: 30
@@ -124,6 +163,7 @@ baselines:
   run_single_model_llm: true
   lstm_hidden_size: 128
   lstm_epochs: 200
+  lstm_checkpoint_every_epochs: 20   # LSTM training checkpoint interval (resume after a stop)
 
 conditions:
   - naive
@@ -133,6 +173,15 @@ conditions:
   - full_pipeline
   - full_pipeline_no_critic
   - full_pipeline_no_similarity
+  # Exploratory model comparison (see llm.variants). Grouped by model so
+  # Ollama loads each model once. Each line adds a full pass over the test
+  # split, so check the step 3 --time limit before enabling.
+  - single_model_llm@gemma3
+  - full_pipeline@gemma3
+  - single_model_llm@medgemma
+  - full_pipeline@medgemma
+  - single_model_llm@llama_Med42_70b
+  - full_pipeline@llama_Med42_70b
 
 evaluation:
   bootstrap_resamples: 2000

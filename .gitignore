@@ -6,3 +6,6 @@ __pycache__/
 *.out
 mimic-iv
 mimic-iv-twin-work/
+# Personal job profiles hold credentials — keep them in ~/.config, never in the repo
+*profile*.yml
+!config/profile.sample.yml
