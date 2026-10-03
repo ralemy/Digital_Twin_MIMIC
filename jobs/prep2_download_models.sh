@@ -15,6 +15,21 @@
 # Re-submitting after a timeout or failure continues where it left off
 # (`ollama pull` resumes partial downloads).
 #
+# The Nibi configs use six models (docs/llm_selection.docx):
+#   qwen2.5:32b-instruct-q8_0 (alias qwen2.5:32b)            ~35 GB  Ollama library
+#   Baichuan-M2-32B Q8_0      (alias baichuan-m2:32b)        ~35 GB  Hugging Face (bartowski)
+#   gemma3:27b                                               ~17 GB  Ollama library
+#   MedGemma 27B text Q4_K_M  (alias medgemma:27b)           ~17 GB  Hugging Face (unsloth)
+#   llama3:70b-instruct-q4_K_M                               ~43 GB  Ollama library
+#   Llama3-Med42-70B Q4_K_M   (alias med42:70b)              ~43 GB  Hugging Face (mradermacher)
+# None of these downloads needs a login or a licence click-through: the
+# Ollama library models and the three Hugging Face GGUF repositories are
+# ungated. Their licences still apply to how you use them (Gemma Terms of
+# Use, Health AI Developer Foundations terms for MedGemma, Meta Llama 3
+# Community Licence and Acceptable Use Policy for Llama 3 and Med42,
+# Apache 2.0 for Qwen2.5 and Baichuan-M2). jobs/run_all.sh runs this job as
+# its first stage.
+#
 # All Nibi nodes have internet access (Alliance docs, Nibi > Site specifics),
 # so this runs as a regular CPU-only job — no GPU needed to download.
 # Single-core and network bound.

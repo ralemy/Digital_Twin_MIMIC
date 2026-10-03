@@ -16,8 +16,11 @@
 #   sbatch jobs/step3_run_experiment_nibi.sh config/config_nibi_lean.yaml
 #   sbatch jobs/step3_run_experiment_nibi.sh config/config_nibi_full_variables.yaml
 # Defaults to config_nibi_lean.yaml (the HREB-approved scope) if omitted.
-# --time=08:00:00 below is sized for the slower 19-variable scope; the
-# 5-variable job will typically finish well inside that.
+# --time=08:00:00 below does NOT fit a whole run of either scope (see
+# docs/runtime_estimates.md): with every condition in the config, the
+# 5-variable run takes ~13.5 GPU-hours (2 chained jobs) and the 19-variable
+# run ~49 (7 chained jobs). Chain the continuations as shown below; shorter
+# jobs schedule sooner and nothing is lost but the batch in progress.
 #
 # Resuming: run_experiment.py checkpoints as it goes (GBM per variable, LSTM
 # every few epochs, each condition per batch of
@@ -60,9 +63,6 @@ PROJECT_DIR="$AGENTIC_DT_PRJ"
 cd "$PROJECT_DIR"
 
 CONFIG="${1:-config/config_nibi_lean.yaml}"
-OLLAMA_PORT=11434
-export OLLAMA_NUM_PARALLEL=4        # must match the config's performance.llm_max_concurrent_requests
-export OLLAMA_MODELS         # already set by the submitting shell (checked above) — re-exported for ollama serve/list below
 
 echo "== job $SLURM_JOB_ID starting on $(hostname) at $(date) =="
 echo "== account=def-roudsari  user=$(whoami)  project_dir=$PROJECT_DIR  config=$CONFIG =="
@@ -79,49 +79,18 @@ fi
 module load python/3.11
 source "$PROJECT_DIR/.venv/bin/activate"
 
-# --- start Ollama in the background, on this node only (127.0.0.1) --------
-mkdir -p "$OLLAMA_MODELS"
-ollama serve > "ollama-${SLURM_JOB_ID}.log" 2>&1 &
-OLLAMA_PID=$!
-
-cleanup() {
-    echo "== stopping ollama (pid $OLLAMA_PID) at $(date) =="
-    kill "$OLLAMA_PID" 2>/dev/null || true
-    wait "$OLLAMA_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# --- wait for the server to be ready before touching it --------------------
-echo "== waiting for ollama on 127.0.0.1:${OLLAMA_PORT} =="
-for i in $(seq 1 60); do
-    if curl -sf "http://127.0.0.1:${OLLAMA_PORT}/api/tags" > /dev/null; then
-        echo "== ollama ready after ${i}s =="
-        break
-    fi
-    if [ "$i" -eq 60 ]; then
-        echo "== ollama did not become ready within 60s — aborting ==" >&2
-        exit 1
-    fi
-    sleep 1
-done
-
+# --- Ollama on a per-job port, on this node only (127.0.0.1) ---------------
+# OLLAMA_NUM_PARALLEL / OLLAMA_FLASH_ATTENTION come from the config's
+# performance section (see jobs/ollama_lib.sh).
 # Every model the config uses (llm.model plus any llm.variants named in
 # `conditions`) must already be pulled (see header above) — compute nodes
 # typically can't reach the internet to pull them now.
-MODELS=$(python -c 'import sys; sys.path.insert(0, "src"); from common import load_config, llm_models_in_use; print("\n".join(llm_models_in_use(load_config(sys.argv[1]))))' "$CONFIG")
-PULLED=$(ollama list | awk 'NR > 1 {print $1}')
-for MODEL in $MODELS; do
-    if ! grep -Fxq "$MODEL" <<< "$PULLED"; then
-        echo "== model '$MODEL' not found in \$OLLAMA_MODELS ($OLLAMA_MODELS) —" >&2
-        echo "== run these on a login node before submitting this job. Aborting. ==" >&2
-        python -c 'import sys; sys.path.insert(0, "src"); from common import load_config, llm_setup_commands; print("\n".join(llm_setup_commands(load_config(sys.argv[1]))))' "$CONFIG" >&2
-        exit 1
-    fi
-    echo "== model '$MODEL' found =="
-done
+source jobs/ollama_lib.sh
+start_ollama "$CONFIG"
+require_models "$CONFIG" all
 
 echo "== step 3/4: run_experiment.py =="
 python src/run_experiment.py --config-file "$CONFIG" "${@:2}"   # e.g. --full-refresh
 
 echo "== job $SLURM_JOB_ID finished at $(date) =="
-# `trap cleanup EXIT` stops ollama on the way out, success or failure.
+# start_ollama's EXIT trap stops ollama on the way out, success or failure.

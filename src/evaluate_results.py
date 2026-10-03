@@ -33,6 +33,7 @@ import pandas as pd
 from scipy.stats import wilcoxon
 
 from common import LLM_CONDITIONS, get_logger, load_config, parse_step_args, split_condition, vasopressor_cache_path
+import tracking
 from metrics import smape
 
 log = get_logger("evaluate_results")
@@ -140,6 +141,25 @@ def model_variant_comparisons(cfg: dict, results_dir: Path) -> list[dict]:
     return out
 
 
+def extra_comparisons(cfg: dict, results_dir: Path) -> list[dict]:
+    """The condition pairs listed under evaluation.extra_comparisons, e.g.
+    which critic a MedGemma forecaster should have:
+        - [full_pipeline_clip_critic@medgemma, full_pipeline@medgemma]
+    Each [A, B] pair gets the same paired test as the RQs (A - B) plus the
+    plausibility comparison; pairs with missing results are skipped."""
+    out = []
+    for pair in (cfg.get("evaluation") or {}).get("extra_comparisons") or []:
+        name_a, name_b = pair
+        data_a, data_b = load_raw(results_dir, name_a), load_raw(results_dir, name_b)
+        if data_a is None or data_b is None:
+            log.warning("Skipping extra comparison %s vs %s — results missing.", name_a, name_b)
+            continue
+        result = compare_conditions(name_a, name_b, data_a, data_b, cfg)
+        result["plausibility"] = plausibility_violation_comparison(name_a, name_b, data_a, data_b, cfg)
+        out.append(result)
+    return out
+
+
 def rq3_subgroup_analysis(cfg: dict, results_dir: Path) -> dict | None:
     work_dir = Path(cfg["paths"]["work_dir"])
     vaso_path = vasopressor_cache_path(cfg)
@@ -187,6 +207,49 @@ def rq3_subgroup_analysis(cfg: dict, results_dir: Path) -> dict | None:
     return {"deteriorating_stay_ids": sorted(deteriorating_ids), "results_by_condition": subgroup_results}
 
 
+def interval_calibration(cfg: dict, results_dir: Path) -> dict | None:
+    """Test-set interval coverage and width per condition, before and after
+    applying the split-conformal factors from <results_dir>/calibration.json
+    (src/calibrate.py). Factors fitted for different settings than the test
+    forecasts (key mismatch) are not applied."""
+    from calibrate import apply_factors, calibration_key
+    from metrics import interval_coverage, mean_interval_width
+
+    path = results_dir / "calibration.json"
+    if not path.exists():
+        log.info("No %s — interval calibration not reported (run src/calibrate.py first).", path.name)
+        return None
+    cal = json.loads(path.read_text())
+    cohort = pd.read_parquet(Path(cfg["paths"]["work_dir"]) / "cohort.parquet")
+    train_ids = sorted(int(i) for i in cohort.loc[cohort["split"] == "train", "stay_id"])
+    variables = [v["name"] for v in cfg["variables"]]
+    out = {"alpha": cal["alpha"], "n_calibration_patients": cal["n_calibration_patients"], "conditions": {}}
+    for condition, entry in cal["conditions"].items():
+        data = load_raw(results_dir, condition)
+        if data is None:
+            continue
+        if entry["key"] != calibration_key(cfg, condition, train_ids):
+            log.warning("Calibration factors for '%s' were fitted with different settings — not applied.", condition)
+            continue
+        lo, hi = apply_factors(data["y_pred"], data["y_lower"], data["y_upper"], entry["factors"], variables)
+        per_var = {}
+        for i, var in enumerate(variables):
+            yt, yl, yu = data["y_true"][..., i], data["y_lower"][..., i], data["y_upper"][..., i]
+            per_var[var] = {"factor": entry["factors"].get(var),
+                            "coverage_before": interval_coverage(yt, yl, yu),
+                            "coverage_after": interval_coverage(yt, lo[..., i], hi[..., i]),
+                            "width_before": mean_interval_width(yl, yu),
+                            "width_after": mean_interval_width(lo[..., i], hi[..., i])}
+        out["conditions"][condition] = {
+            "coverage_before": interval_coverage(data["y_true"], data["y_lower"], data["y_upper"]),
+            "coverage_after": interval_coverage(data["y_true"], lo, hi),
+            "width_before": mean_interval_width(data["y_lower"], data["y_upper"]),
+            "width_after": mean_interval_width(lo, hi),
+            "per_variable": per_var,
+        }
+    return out
+
+
 def main(config_path: str) -> None:
     cfg = load_config(config_path)
     results_dir = Path(cfg["paths"]["results_dir"])
@@ -221,15 +284,52 @@ def main(config_path: str) -> None:
     if model_comparisons:
         output["model_variant_comparisons"] = model_comparisons
 
+    extra = extra_comparisons(cfg, results_dir)
+    if extra:
+        output["extra_comparisons"] = extra
+
+    calibration = interval_calibration(cfg, results_dir)
+    if calibration:
+        output["interval_calibration"] = calibration
+
     out_path = results_dir / "statistical_analysis.json"
     out_path.write_text(json.dumps(output, indent=2, default=str))
+    tracking.start(cfg, "evaluate", config_path)
+    tracking.log_metrics(_aggregate_numbers(output, "evaluate"))
     log.info("Wrote statistical analysis to %s", out_path)
 
     for key, val in output.items():
         log.info("--- %s ---\n%s", key, json.dumps(val, indent=2, default=str)[:2000])
 
 
+def _aggregate_numbers(obj, prefix: str) -> dict:
+    """The numbers in the analysis (means, CIs, p-values, counts) flattened
+    for the live dashboard. Anything keyed by an id (e.g. RQ3's list of
+    deteriorating stay ids) is left out, so nothing identifies a patient."""
+    out = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if {"id", "ids"} & set(str(k).lower().split("_")):
+                continue
+            out.update(_aggregate_numbers(v, f"{prefix}/{k}"))
+    elif isinstance(obj, list):
+        named = [x for x in obj if isinstance(x, dict) and "comparison" in x]
+        if named:
+            for x in named:
+                out.update(_aggregate_numbers(x, f"{prefix}/{x['comparison']}"))
+        elif prefix.endswith("ci95") and len(obj) == 2 and all(isinstance(x, (int, float)) for x in obj):
+            out[f"{prefix}_lo"], out[f"{prefix}_hi"] = obj        # a confidence interval; other lists are dropped
+    elif isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        out[prefix] = obj
+    return out
+
+
 if __name__ == "__main__":
     doc = __doc__ or "Statistical analysis — Chapter 5, Section 5.6."
     args = parse_step_args(doc.strip().splitlines()[0])
-    main(args.config_file)
+    try:
+        main(args.config_file)
+    except BaseException:
+        tracking.finish(exit_code=1)
+        raise
+    tracking.finish()

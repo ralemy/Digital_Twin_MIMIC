@@ -5,7 +5,9 @@
 #   bash jobs/monitor-job.sh 23132444       # a specific job
 #   bash jobs/monitor-job.sh -i 120 23132444   # check every 2 minutes
 #
-# Every minute it prints one status line (state, elapsed / time limit, node).
+# Every minute it prints one status line (state, elapsed / time limit, node)
+# and, while the job runs, the latest line of its output file whenever that
+# line has changed (e.g. "batch 7/15 done").
 # While the job is PENDING it also prints, on the first check, every 5
 # minutes after that and whenever the pending reason changes, what helps
 # judge when it may start:
@@ -27,19 +29,22 @@
 # Cluster etiquette (Alliance): it queries Slurm at most once per interval
 # (minimum 60s), only one copy runs per user at a time, and it refuses to
 # run inside a Slurm job. Stop it any time with Ctrl+C — that only stops
-# the monitor, not the job.
+# the monitor, not the job. --no-lock skips the one-copy check; it's for
+# jobs/run_all.sh, which holds its own lock and runs one monitor at a time.
 # =============================================================================
 set -uo pipefail
 
 INTERVAL=60
 DETAIL_EVERY=5          # pending details every this many checks
 JOB_ID=""
+USE_LOCK=1
 
 usage() { sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -i|--interval) INTERVAL="${2:-}"; shift 2 ;;
+        --no-lock) USE_LOCK=0; shift ;;
         -h|--help) usage 0 ;;
         -*) echo "unknown option: $1" >&2; usage 1 ;;
         *) JOB_ID="$1"; shift ;;
@@ -55,11 +60,13 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 fi
 
 # One monitor per user at a time.
-LOCK="${XDG_RUNTIME_DIR:-/tmp}/monitor-job.$USER.lock"
-exec 9> "$LOCK"
-if ! flock -n 9; then
-    echo "== another monitor-job.sh is already running for $USER — stop it first (only one monitoring loop at a time) ==" >&2
-    exit 1
+if [ "$USE_LOCK" -eq 1 ]; then
+    LOCK="${XDG_RUNTIME_DIR:-/tmp}/monitor-job.$USER.lock"
+    exec 9> "$LOCK"
+    if ! flock -n 9; then
+        echo "== another monitor-job.sh is already running for $USER — stop it first (only one monitoring loop at a time) ==" >&2
+        exit 1
+    fi
 fi
 
 if [ -z "$JOB_ID" ]; then
@@ -201,8 +208,16 @@ show_final() {
     [[ "$state" == COMPLETED* ]]
 }
 
+# The output file's latest line, skipping per-request noise, cut to 200
+# characters ("" if there's nothing yet).
+latest_output() {
+    [ -n "$OUT_FILE" ] && [ -r "$OUT_FILE" ] || return 0
+    tail -n 200 "$OUT_FILE" 2>/dev/null | grep -v -e 'HTTP Request' -e '^\s*$' -e '^Traceback' -e '^  ' | tail -n 1 | cut -c1-200
+}
+
 OUT_FILE=""
 LAST_REASON=""
+LAST_OUTPUT=""
 CHECK=0
 SEEN=0
 while true; do
@@ -235,6 +250,11 @@ while true; do
         RUNNING|COMPLETING|CONFIGURING)
             [ "$LAST_REASON" != "__running__" ] && echo "[$(ts)] ▶ started on $nodes at $start"
             echo "[$(ts)] $state  elapsed $used / $limit  on $nodes"
+            out=$(latest_output)
+            if [ -n "$out" ] && [ "$out" != "$LAST_OUTPUT" ]; then
+                echo "           │ $out"
+                LAST_OUTPUT=$out
+            fi
             LAST_REASON="__running__" ;;
         *)
             echo "[$(ts)] $state  ($reason)" ;;

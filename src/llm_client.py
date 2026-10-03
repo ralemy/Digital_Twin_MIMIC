@@ -15,6 +15,7 @@ depends on LocalLLM.generate(prompt) -> str, so nothing else needs to change.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import requests
@@ -24,12 +25,17 @@ from common import get_logger, ollama_model_name
 
 log = get_logger("llm_client")
 
+# Extra attempts after an HTTP 5xx from Ollama before the call fails.
+SERVER_ERROR_RETRIES = 2
+
 
 class LocalLLM:
     def __init__(self, cfg: dict):
         llm_cfg = cfg["llm"]
         self.backend = llm_cfg["backend"]
-        self.host = llm_cfg["ollama_host"]
+        # DT_OLLAMA_HOST lets a job point at its own per-job Ollama port
+        # (another user's server may hold the default 11434 on a shared node).
+        self.host = os.environ.get("DT_OLLAMA_HOST") or llm_cfg["ollama_host"]
         self.model = ollama_model_name(llm_cfg)      # alias if set — the name sent to Ollama
         self.source_model = llm_cfg["model"]         # the tag it was pulled as
         self.temperature = llm_cfg["temperature"]
@@ -98,8 +104,20 @@ class LocalLLM:
             payload["format"] = "json"
 
         t0 = time.time()
-        resp = self._session.post(f"{self.host}/api/generate", json=payload, timeout=self.timeout)
-        resp.raise_for_status()
+        # Ollama answers some requests with a 500 that a repeat of the same
+        # request doesn't hit (job 23150606: 61 of Med42's 80 fallbacks).
+        # Retry those, so a server hiccup isn't scored as a model failure.
+        for attempt in range(1 + SERVER_ERROR_RETRIES):
+            resp = self._session.post(f"{self.host}/api/generate", json=payload, timeout=self.timeout)
+            if resp.status_code < 500:
+                break
+            log.warning("Ollama returned HTTP %d (attempt %d of %d): %s", resp.status_code,
+                        attempt + 1, 1 + SERVER_ERROR_RETRIES, resp.text[:300])
+        if not resp.ok:
+            # raise_for_status() alone drops the body, which is the only place
+            # Ollama says what went wrong (its server log doesn't).
+            raise requests.exceptions.HTTPError(
+                f"{resp.status_code} from Ollama /api/generate: {resp.text[:300]}", response=resp)
         body = resp.json()
         text = body["response"]
         log.debug("LLM call took %.2fs, %d chars out.", time.time() - t0, len(text))

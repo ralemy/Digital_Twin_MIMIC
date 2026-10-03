@@ -9,3 +9,12 @@ mimic-iv-twin-work/
 # Personal job profiles hold credentials — keep them in ~/.config, never in the repo
 *profile*.yml
 !config/profile.sample.yml
+
+# jobs/run_all.sh state and logs
+run_all/
+
+# Personal Claude Code settings (conversation-history hook)
+.claude/settings.local.json
+
+# Apptainer images (built from containers/*.def)
+*.sif

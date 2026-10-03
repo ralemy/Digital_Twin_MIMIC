@@ -47,6 +47,12 @@ class CheckpointMismatch(RuntimeError):
     pass
 
 
+def checkpoint_root(cfg: dict) -> Path:
+    """paths.checkpoint_dir if set (e.g. a tuned config keeps its own),
+    else <work_dir>/checkpoints."""
+    return Path(cfg["paths"].get("checkpoint_dir") or Path(cfg["paths"]["work_dir"]) / "checkpoints")
+
+
 @contextmanager
 def atomic_path(path: Path):
     """Yield a temporary path next to `path`; rename it onto `path` only if
@@ -74,7 +80,19 @@ def model_fingerprint(cfg: dict, model: str, train_ids) -> dict:
           "train_ids": _ids_hash(train_ids)}
     if model == "lstm":
         fp["lstm"] = {k: cfg["baselines"].get(k) for k in ("lstm_hidden_size", "lstm_epochs")}
+        fp["lstm"].update(_set_keys(cfg["baselines"], ("lstm_learning_rate", "lstm_seed")))
+    if model == "gbm":
+        extra = _set_keys(cfg["baselines"], ("gbm_max_depth", "gbm_max_iter", "gbm_learning_rate"))
+        if extra:
+            fp["gbm"] = extra
     return fp
+
+
+def _set_keys(section: dict, keys) -> dict:
+    """The given keys that are present in a config section. Settings added
+    after the first experiments are fingerprinted only when set, so existing
+    checkpoints made without them stay valid."""
+    return {k: section[k] for k in keys if k in section}
 
 
 def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids) -> dict:
@@ -84,12 +102,23 @@ def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids) -> dic
     base, variant = split_condition(condition)
     fp = {"condition": condition, "variables": cfg["variables"], "cohort": cfg["cohort"],
           "train_ids": _ids_hash(train_ids), "test_ids": _ids_hash(test_ids)}
-    if base == "lstm":
-        fp["lstm"] = model_fingerprint(cfg, "lstm", train_ids)["lstm"]
+    if base in ("lstm", "gbm"):
+        fp.update({k: v for k, v in model_fingerprint(cfg, base, train_ids).items() if k == base})
     if base in LLM_CONDITIONS:
         fp["llm"] = {k: v for k, v in cfg_for_llm_variant(cfg, variant)["llm"].items() if k != "variants"}
         fp["similarity_agent"] = cfg["similarity_agent"]
         fp["critic_agent"] = cfg["critic_agent"]
+        if cfg.get("forecasting_agent"):
+            fp["forecasting_agent"] = cfg["forecasting_agent"]
+        # A variable the LLM leaves out now gets the naive forecast for that
+        # variable only; before, the whole forecast fell back. Predictions
+        # made under the old rule must not be reused.
+        fp["missing_variable"] = "naive_fill"
+        # A critic on another model (llm.variants.<v>.critic_variant): its
+        # model's settings shape the corrected forecasts too.
+        cv = fp["llm"].get("critic_variant")
+        if cv is not None:
+            fp["critic_llm"] = {k: v for k, v in cfg_for_llm_variant(cfg, cv)["llm"].items() if k != "variants"}
     return fp
 
 
@@ -188,7 +217,9 @@ class ConditionCheckpoint:
             if z["stay_ids"].tolist() != list(stay_ids):
                 return None
             return {k: z[k] for k in ("y_pred", "y_lower", "y_upper")} | {
-                "violations": int(z["violations"]), "fallbacks": int(z["fallbacks"])}
+                "violations": int(z["violations"]), "fallbacks": int(z["fallbacks"]),
+                # Baseline batches saved before per-variable fill counts existed.
+                "filled": z["filled"] if "filled" in z.files else np.zeros(z["y_pred"].shape[2], dtype=int)}
 
     def save_batch(self, index: int, stay_ids: list[int], batch: dict) -> None:
         self._check_owner()
@@ -196,7 +227,8 @@ class ConditionCheckpoint:
             with open(tmp, "wb") as f:
                 np.savez(f, stay_ids=np.array(stay_ids),
                          y_pred=batch["y_pred"], y_lower=batch["y_lower"], y_upper=batch["y_upper"],
-                         violations=batch["violations"], fallbacks=batch["fallbacks"])
+                         violations=batch["violations"], fallbacks=batch["fallbacks"],
+                         filled=batch["filled"])
 
     def load_rows(self, n_batches: int) -> list[dict] | None:
         """The condition's summary rows if it already finished, else None.

@@ -201,7 +201,7 @@ llm:
   # parse/shape failure, so a truncation shows up as silently-degraded
   # accuracy, not a crash) and raise further if needed.
   max_tokens: 4096   # JSON for 19 variables x 24 h is ~2,500-3,500 tokens; 1800 would truncate every forecast
-  request_timeout_s: 240
+  request_timeout_s: 600   # a 19-variable forecast takes ~2-2.5 min at the median (~3.7x the lean one); the lean tail reached 4x the median
   # A 19-variable prompt (per-hour summaries + similarity-cohort context)
   # is meaningfully longer than the 5-variable version — raised from 8192
   # to keep headroom. Recheck actual prompt token counts on your data

@@ -1,0 +1,75 @@
+# =============================================================================
+# Hyperparameter search grid for src/tune.py (jobs/step3b_tune_nibi.sh).
+#
+# Sequential (coordinate) search: rounds run in order; each evaluates the
+# current best settings ("incumbent") and every trial below (incumbent +
+# the trial's overrides) on the round's conditions, scored on the TUNING
+# subset of the validation split. A trial replaces the incumbent only if it
+# lowers the mean per-patient sMAPE by at least min_improvement with every
+# condition's LLM fallback rate <= max_fallback_rate. The test split is
+# never used.
+#
+# Keys are dotted paths into the experiment config (e.g.
+# similarity_agent.k_neighbors). The tuned settings apply to every model,
+# including the llm.variants used in the model comparison.
+#
+# Cost (Qwen2.5-32B, 128 patients = 4 batches): ~20 min per LLM condition per
+# setting not already evaluated; GBM/LSTM trials take about a minute.
+# Settings already evaluated (e.g. the incumbent of an earlier round) are
+# cached and cost nothing. This grid is ~6 GPU-hours from scratch.
+# =============================================================================
+tuning:
+  n_tune_patients: 128        # validation stays used for tuning; the rest (322) are kept for calibrate.py
+  seed: 42                    # fixes the tuning/calibration split
+  max_fallback_rate: 0.10     # a setting with more naive fallbacks than this can't win
+  min_improvement: 0.002      # sMAPE (fraction) a trial must gain to replace the incumbent
+
+  # Applied to every trial (not tuned). Seeding the LSTM makes its trials
+  # comparable, without initialisation noise.
+  fixed:
+    baselines.lstm_seed: 42
+
+  rounds:
+    # --- conventional baselines (CPU-scale; tuned so the comparison is fair) ---
+    - name: gbm
+      conditions: [gbm]
+      trials:
+        depth3: {baselines.gbm_max_depth: 3}
+        depth6: {baselines.gbm_max_depth: 6}
+        iter300_lr005: {baselines.gbm_max_iter: 300, baselines.gbm_learning_rate: 0.05}
+    - name: lstm
+      conditions: [lstm]
+      trials:
+        hidden64: {baselines.lstm_hidden_size: 64}
+        hidden256: {baselines.lstm_hidden_size: 256}
+        epochs400: {baselines.lstm_epochs: 400}
+        lr3e-3: {baselines.lstm_learning_rate: 0.003}
+
+    # --- the multi-agent pipeline ----------------------------------------------
+    - name: similarity_context        # what the forecaster is told about similar patients
+      conditions: [full_pipeline]
+      trials:
+        trajectory: {forecasting_agent.similarity_context: trajectory}
+    - name: k_neighbors
+      conditions: [full_pipeline]
+      trials:
+        k10: {similarity_agent.k_neighbors: 10}
+        k50: {similarity_agent.k_neighbors: 50}
+
+    # --- prompt and decoding (affect every LLM condition, so both are scored) --
+    - name: prompt
+      conditions: [single_model_llm, full_pipeline]
+      trials:
+        strict_length: {forecasting_agent.strict_length: true}
+        recent6h: {forecasting_agent.recent_hours: 6}
+        strict_recent6h: {forecasting_agent.strict_length: true, forecasting_agent.recent_hours: 6}
+    - name: temperature
+      conditions: [single_model_llm, full_pipeline]
+      trials:
+        t0: {llm.temperature: 0.0}
+
+    # --- critic ----------------------------------------------------------------
+    - name: critic
+      conditions: [full_pipeline]
+      trials:
+        attempts2: {critic_agent.max_correction_attempts: 2}

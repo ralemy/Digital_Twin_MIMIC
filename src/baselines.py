@@ -80,9 +80,11 @@ class GBMBaseline:
     """One regressor per (variable, forecast_hour) pair — simple, robust,
     trains in seconds to a few minutes on a lean-scope cohort on CPU."""
 
-    def __init__(self, variables: list[str], horizon_hours: int):
+    def __init__(self, variables: list[str], horizon_hours: int,
+                 max_depth: int = 4, max_iter: int = 150, learning_rate: float = 0.1):
         self.variables = variables
         self.horizon_hours = horizon_hours
+        self.max_depth, self.max_iter, self.learning_rate = max_depth, max_iter, learning_rate
         self.models: dict[tuple[str, int], HistGradientBoostingRegressor] = {}
         self.residual_std: dict[tuple[str, int], float] = {}
 
@@ -107,7 +109,8 @@ class GBMBaseline:
                 mask = ~np.isnan(y)
                 if mask.sum() < 10:
                     continue
-                model = HistGradientBoostingRegressor(max_depth=4, max_iter=150, random_state=0)
+                model = HistGradientBoostingRegressor(max_depth=self.max_depth, max_iter=self.max_iter,
+                                                      learning_rate=self.learning_rate, random_state=0)
                 model.fit(X[mask], y[mask])
                 self.models[(var, h)] = model
                 preds = model.predict(X[mask])
@@ -187,7 +190,8 @@ class LSTMBaseline:
         return torch.tensor(filled, dtype=torch.float32)
 
     def fit(self, train_tensors: dict[int, dict], epochs: int = 100, lr: float = 1e-3,
-            checkpoint_path: Path | None = None, checkpoint_every: int = 20) -> LSTMBaseline:
+            checkpoint_path: Path | None = None, checkpoint_every: int = 20,
+            seed: int | None = None) -> LSTMBaseline:
         """With checkpoint_path, the weights and optimizer state are saved every
         `checkpoint_every` epochs (and after the last) and, if the file exists
         from an interrupted run, training continues from its epoch. The
@@ -208,6 +212,12 @@ class LSTMBaseline:
         Y = torch.tensor(np.nan_to_num(hor_norm, nan=0.0), dtype=torch.float32).to(self.device)
         Y_mask = torch.tensor(~np.isnan(hor_norm), dtype=torch.float32).to(self.device)
 
+        if seed is not None:
+            # Same initial weights on every run (and for every tuning trial),
+            # so differences between LSTM settings aren't initialisation noise.
+            torch.manual_seed(seed)
+            self.model = _Seq2SeqLSTM(len(self.variables), hidden=self.model.encoder.hidden_size,
+                                      horizon_hours=self.horizon_hours).to(self.device)
         opt = torch.optim.Adam(self.model.parameters(), lr=lr)
         start_epoch = 0
         if checkpoint_path is not None and checkpoint_path.exists():

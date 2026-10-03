@@ -9,10 +9,16 @@ point-accuracy — it is deliberately NOT another attempt to make the forecast
 "more accurate" in a general sense, only to bring implausible values back
 inside clinically defensible bounds.
 
-Runs entirely locally: the "correction call" is a second call to the same
-local LLM, not a different or larger model.
+Runs entirely locally. The "correction call" goes to the forecaster's own
+local LLM unless the LLM variant sets `critic_variant`, which gives the
+critic another local model (e.g. a MedGemma forecaster with a Gemma 3
+critic). With clip_only (condition full_pipeline_clip_critic) there is no
+LLM call at all: out-of-range values are clipped to the plausible range,
+the baseline that an LLM critic has to beat on accuracy.
 """
 from __future__ import annotations
+
+import threading
 
 import numpy as np
 import requests
@@ -34,13 +40,17 @@ CORRECTION_SYSTEM_PROMPT = (
 
 
 class CriticAgent:
-    def __init__(self, llm: LocalLLM, cfg: dict, enabled: bool = True):
+    def __init__(self, llm: LocalLLM | None, cfg: dict, enabled: bool = True, clip_only: bool = False):
         self.llm = llm
         self.enabled = enabled
+        self.clip_only = clip_only
         self.variables = [v["name"] for v in cfg["variables"]]
         self.plausible_range = {v["name"]: tuple(v["plausible_range"]) for v in cfg["variables"]}
         self.units = {v["name"]: v["unit"] for v in cfg["variables"]}
-        self.max_attempts = cfg["critic_agent"]["max_correction_attempts"]
+        self.max_attempts = 0 if clip_only else cfg["critic_agent"]["max_correction_attempts"]
+        # Failed correction calls (then clipped), for the live metrics.
+        self.error_counts: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def review(self, forecast: dict) -> dict:
         """Returns a new forecast dict plus a per-variable violation count
@@ -71,9 +81,11 @@ class CriticAgent:
             if len(bad_idx) > 0:
                 # Bounded fallback: clip anything the LLM still couldn't fix,
                 # so a stubborn model never lets an implausible value through.
+                # (A clip-only critic always ends up here, quietly.)
                 fixed = np.clip(fixed, lo, hi)
-                log.info("Clipped %d residual out-of-range value(s) for '%s' after %d correction attempt(s).",
-                          len(bad_idx), var, attempt)
+                if not self.clip_only:
+                    log.info("Clipped %d residual out-of-range value(s) for '%s' after %d correction attempt(s).",
+                             len(bad_idx), var, attempt)
 
             corrected[var] = fixed.tolist()
             any_correction = True
@@ -110,4 +122,6 @@ class CriticAgent:
             raise                       # server gone: stop the run, don't clip and carry on
         except Exception as e:  # noqa: BLE001
             log.warning("Critic correction call failed for '%s' (%s); will clip instead.", var, e)
+            with self._lock:
+                self.error_counts["critic_correction_failed"] = self.error_counts.get("critic_correction_failed", 0) + 1
             return np.array(values, dtype=float)

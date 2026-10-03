@@ -91,4 +91,5 @@ class SimilarityAgent:
             "neighbor_stay_ids": neighbor_ids,
             "distances": dist[0].tolist(),
             "cohort_mean_trajectory": cohort_mean_trajectory,
+            "neighbor_horizons": neighbor_horizons,
         }

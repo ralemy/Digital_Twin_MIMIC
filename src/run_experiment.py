@@ -35,10 +35,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from checkpoint import RunCheckpoint, condition_fingerprint
+import tracking
+from checkpoint import RunCheckpoint, checkpoint_root, condition_fingerprint
 from common import (
     LLM_CONDITIONS,
     cfg_for_llm_variant,
+    critic_variant,
     ensure_work_dirs,
     get_logger,
     load_config,
@@ -80,7 +82,7 @@ def main(config_path: str, full_refresh: bool = False) -> None:
     ensure_work_dirs(cfg)
     validate_conditions(cfg)
 
-    checkpoint = RunCheckpoint(Path(cfg["paths"]["work_dir"]) / "checkpoints" / "run_experiment")
+    checkpoint = RunCheckpoint(checkpoint_root(cfg) / "run_experiment")
     if full_refresh:
         log.info("--full-refresh: deleting checkpoints in %s and starting from scratch.", checkpoint.root)
         checkpoint.clear()
@@ -89,6 +91,7 @@ def main(config_path: str, full_refresh: bool = False) -> None:
     # From here on this run owns the checkpoints; an older run still writing
     # to them (e.g. a cancelled job that hasn't fully stopped) is refused.
     checkpoint.claim()
+    tracking.start(cfg, "run", config_path)
 
     cohort, panel_long = load_cohort_and_panel(cfg)
     tensors = build_tensors(cfg, cohort, panel_long)
@@ -117,6 +120,14 @@ def main(config_path: str, full_refresh: bool = False) -> None:
         # The Ollama name (alias if set) the condition ran against, recorded
         # with its results so each row says which model produced it.
         llm_model = ollama_model_name(cfg_for_llm_variant(cfg, variant)["llm"]) if needs_llm else None
+        # And what checked its forecasts: the same model, another variant's
+        # model (critic_variant), plain clipping, or nothing.
+        critic_model = None
+        if base == "full_pipeline_clip_critic":
+            critic_model = "clip-only"
+        elif base in ("full_pipeline", "full_pipeline_no_similarity"):
+            cv = critic_variant(cfg, variant)
+            critic_model = ollama_model_name(cfg_for_llm_variant(cfg, cv)["llm"]) if cv else llm_model
         cond_checkpoint = checkpoint.condition(
             condition, condition_fingerprint(cfg, condition, train_ids, test_ids))
         batch_size = max(1, int(cfg.get("performance", {}).get("checkpoint_batch_size", 32)))
@@ -124,13 +135,16 @@ def main(config_path: str, full_refresh: bool = False) -> None:
         if done_rows is not None:
             log.info("Condition '%s' already finished in an earlier run — results loaded from checkpoint.", condition)
             summary_rows.extend(done_rows)
+            _track_condition(condition, done_rows, len(summary_rows) // max(1, len(variables)))
             continue
 
         if llm_model:
-            log.info("Condition '%s' uses LLM '%s'.", condition, llm_model)
+            log.info("Condition '%s' uses LLM '%s'%s.", condition, llm_model,
+                     f" (critic: {critic_model})" if critic_model and critic_model != llm_model else "")
 
         result = run_condition(condition, cfg, splits["train"], splits["test"], fitted_models,
-                               checkpoint=cond_checkpoint)
+                               checkpoint=cond_checkpoint, progress=tracking.progress_logger())
+        tracking.log_errors(condition, result["llm_errors"])
 
         # Share of test patients whose LLM forecast failed (no answer, bad
         # JSON, wrong shape) and was replaced by the naive forecast. Compare
@@ -141,6 +155,16 @@ def main(config_path: str, full_refresh: bool = False) -> None:
             log_fn = log.warning if fallback_rate > 0 else log.info
             log_fn("Condition '%s': %d / %d LLM forecasts fell back to naive (%.1f%%).",
                    condition, result["llm_fallbacks"], len(result["stay_ids"]), 100 * fallback_rate)
+        # Per variable: share of test patients whose otherwise-valid LLM
+        # forecast left the variable out, so it got the naive forecast.
+        filled_rate = {}
+        if result["llm_filled"] is not None:
+            n = max(1, len(result["stay_ids"]))
+            filled_rate = {var: int(k) / n for var, k in zip(variables, result["llm_filled"])}
+            if any(filled_rate.values()):
+                log.warning("Condition '%s': variables filled with the naive forecast: %s.", condition,
+                            ", ".join(f"{v} {k} ({100 * filled_rate[v]:.1f}%)"
+                                      for v, k in zip(variables, result["llm_filled"]) if k))
 
         np.savez_compressed(
             results_dir / f"{condition}_raw.npz",
@@ -158,19 +182,21 @@ def main(config_path: str, full_refresh: bool = False) -> None:
         condition_rows = []
         for var, pm in report.point_metrics.items():
             condition_rows.append({
-                "condition": condition, "llm_model": llm_model, "variable": var,
+                "condition": condition, "llm_model": llm_model, "critic_model": critic_model, "variable": var,
                 "smape": pm["smape"], "mae": pm["mae"], "rmse": pm.get("rmse"),
                 "ks_statistic": report.ks_results.get(var, {}).get("ks_statistic"),
                 "plausibility_violation_rate": report.plausibility_violations.get(var),
                 "interval_coverage": report.coverage,
                 "mean_interval_width": report.mean_width,
                 "llm_fallback_rate": fallback_rate,
+                "llm_filled_rate": filled_rate.get(var),
             })
 
         # Saving the rows marks the condition finished: a resumed run skips it.
         cond_checkpoint.save_rows(condition_rows)
         summary_rows.extend(condition_rows)
         _write_summary(summary_rows, results_dir)
+        _track_condition(condition, condition_rows, len(summary_rows) // max(1, len(variables)))
 
     _write_summary(summary_rows, results_dir)
     log.info("All conditions complete. Combined summary: %s", results_dir / "all_conditions_summary.csv")
@@ -191,7 +217,26 @@ def _add_arguments(parser) -> None:
     )
 
 
+def _track_condition(condition: str, rows: list[dict], n_done: int) -> None:
+    """A finished condition's aggregate metrics (means over variables) for
+    the live dashboard; nothing per patient."""
+    def mean(key):
+        vals = [r[key] for r in rows if isinstance(r.get(key), (int, float)) and r[key] == r[key]]
+        return sum(vals) / len(vals) if vals else None
+    metrics = {f"{condition}/{k}": mean(k) for k in
+               ("smape", "mae", "plausibility_violation_rate", "interval_coverage", "mean_interval_width",
+                "llm_fallback_rate", "llm_filled_rate")}
+    metrics["conditions_done"] = n_done
+    tracking.log_metrics({k: v for k, v in metrics.items() if v is not None})
+    tracking.summary({f"{condition}/smape": metrics.get(f"{condition}/smape")})
+
+
 if __name__ == "__main__":
     doc = __doc__ or "Main entry point — Chapter 5, Section 5.5, steps 2-4."
     args = parse_step_args(doc.strip().splitlines()[0], add_arguments=_add_arguments)
-    main(args.config_file, full_refresh=args.full_refresh)
+    try:
+        main(args.config_file, full_refresh=args.full_refresh)
+    except BaseException:
+        tracking.finish(exit_code=1)
+        raise
+    tracking.finish()

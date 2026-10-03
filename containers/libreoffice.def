@@ -1,0 +1,30 @@
+Bootstrap: docker
+From: debian:bookworm-slim
+
+# Headless LibreOffice for converting .docx/.pptx/.xlsx to PDF on Nibi.
+# Build and use it inside an salloc job (see containers/README.md):
+#   apptainer build --fakeroot "$SLURM_TMPDIR/libreoffice.sif" containers/libreoffice.def
+#   apptainer exec -C -B /project -W "$SLURM_TMPDIR" libreoffice.sif \
+#       soffice --headless --convert-to pdf --outdir <dir> <file.docx>
+#
+# Fonts: Carlito and Caladea are metric-compatible with Calibri and Cambria
+# (the fonts pandoc's .docx files use); Liberation with Arial/Times/Courier;
+# DejaVu covers symbols. Without them, pages would wrap differently than in Word.
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        libreoffice-nogui \
+        fonts-dejavu fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    export LC_ALL=C.UTF-8
+
+%runscript
+    exec soffice --headless "$@"
+
+%labels
+    Purpose "headless document conversion (soffice --convert-to pdf)"

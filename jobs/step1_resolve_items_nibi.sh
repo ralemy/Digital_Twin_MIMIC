@@ -24,7 +24,7 @@
 #SBATCH --job-name=mimic-twin-step1-resolve
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32000M
-#SBATCH --time=00:30:00
+#SBATCH --time=01:15:00
 #SBATCH --output=%x-%j.out
 echo "starting"
 set -euo pipefail

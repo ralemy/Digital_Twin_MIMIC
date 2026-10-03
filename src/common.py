@@ -113,7 +113,8 @@ def icu_dir(cfg: dict) -> Path:
     return Path(cfg["paths"]["mimic_root"]) / "icu"
 
 
-LLM_CONDITIONS = ("single_model_llm", "full_pipeline", "full_pipeline_no_critic", "full_pipeline_no_similarity")
+LLM_CONDITIONS = ("single_model_llm", "full_pipeline", "full_pipeline_no_critic", "full_pipeline_no_similarity",
+                  "full_pipeline_clip_critic")
 
 
 def split_condition(condition: str) -> tuple[str, str | None]:
@@ -143,6 +144,19 @@ def cfg_for_llm_variant(cfg: dict, variant: str | None) -> dict:
     return {**cfg, "llm": llm}
 
 
+def ollama_server_settings(cfg: dict) -> dict[str, str]:
+    """Environment for the `ollama serve` the Nibi jobs start
+    (jobs/ollama_lib.sh): one request slot per request the pipeline sends at
+    once (performance.llm_max_concurrent_requests), and flash attention per
+    performance.ollama_flash_attention (default off). Neither is part of a
+    checkpoint fingerprint, so changing them keeps existing checkpoints."""
+    perf = cfg.get("performance", {})
+    return {
+        "OLLAMA_NUM_PARALLEL": str(max(1, int(perf.get("llm_max_concurrent_requests", 1)))),
+        "OLLAMA_FLASH_ATTENTION": "1" if perf.get("ollama_flash_attention", False) else "0",
+    }
+
+
 def ollama_model_name(llm_cfg: dict) -> str:
     """The name to send to Ollama: llm.alias if set, else llm.model. `model`
     is the tag you pull (often a long hf.co/... path); `alias` is an optional
@@ -166,11 +180,28 @@ def llm_variants_in_use(cfg: dict) -> list[str | None]:
     return out
 
 
+def critic_variant(cfg: dict, variant: str | None) -> str | None:
+    """The LLM variant whose model the critic uses when a variant sets
+    `critic_variant` (e.g. a MedGemma forecaster with a Gemma 3 critic);
+    None means the critic shares the forecaster's model."""
+    return cfg_for_llm_variant(cfg, variant)["llm"].get("critic_variant")
+
+
+def _variants_with_critics(cfg: dict) -> list[str | None]:
+    """llm_variants_in_use plus the variants their critics use."""
+    out = list(llm_variants_in_use(cfg))
+    for v in list(out):
+        cv = critic_variant(cfg, v)
+        if cv is not None and cv not in out:
+            out.append(cv)
+    return out
+
+
 def llm_models_in_use(cfg: dict) -> list[str]:
     """Ollama model names (alias where one is set) a run needs present in
     `ollama list`, e.g. for the job script's pre-flight check:
     `python -c '...print(*llm_models_in_use(cfg))'`."""
-    models = [ollama_model_name(cfg_for_llm_variant(cfg, v)["llm"]) for v in llm_variants_in_use(cfg)]
+    models = [ollama_model_name(cfg_for_llm_variant(cfg, v)["llm"]) for v in _variants_with_critics(cfg)]
     return list(dict.fromkeys(models))
 
 
@@ -178,7 +209,7 @@ def llm_models_to_set_up(cfg: dict) -> list[tuple[str, str | None]]:
     """(model, alias) for every LLM a run needs, alias None where none is set,
     e.g. for jobs/prep2_download_models.sh."""
     pairs = []
-    for v in llm_variants_in_use(cfg):
+    for v in _variants_with_critics(cfg):
         llm = cfg_for_llm_variant(cfg, v)["llm"]
         pairs.append((llm["model"], llm.get("alias") or None))
     return list(dict.fromkeys(pairs))

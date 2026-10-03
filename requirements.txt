@@ -7,3 +7,4 @@ torch>=2.1
 pyyaml>=6.0
 requests>=2.31
 pyarrow>=14.0
+wandb>=0.27        # optional live metrics (logging.wandb in the config); aggregates only

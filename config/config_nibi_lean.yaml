@@ -42,12 +42,13 @@ paths:
 
 performance:
   # Nibi's own guidance is "no more than 14 CPU cores" per GPU requested —
-  # jobs/run_lean_nibi.sh requests --cpus-per-task=12, leaving 2 cores of
+  # the GPU jobs request --cpus-per-task=12, leaving 2 cores of
   # headroom under that ceiling for Slurm/OS overhead rather than requesting
   # right up against the documented limit.
   duckdb_threads: 10
   duckdb_memory_limit_gb: 120      # leaves ~80 GB of step 2's 192000M Slurm allocation for pandas/Python; DuckDB spills to $SLURM_TMPDIR past this
-  llm_max_concurrent_requests: 4   # must match OLLAMA_NUM_PARALLEL in jobs/run_lean_nibi.sh
+  llm_max_concurrent_requests: 8   # requests the pipeline sends at once; the Nibi jobs also start Ollama with OLLAMA_NUM_PARALLEL = this (jobs/ollama_lib.sh). 8 + flash attention: 1.69x the speed of 4 without, same fallbacks/sMAPE (benchmark job 23198298)
+  ollama_flash_attention: true     # OLLAMA_FLASH_ATTENTION for the jobs' Ollama server (benchmarked in job 23198298)
   batch_predict_baselines: true
   # run_experiment.py checkpoints each condition every this many test
   # patients, so a run stopped by the Slurm time limit loses at most one
@@ -119,32 +120,47 @@ llm:
   # not inherit the alias above.
   # alias: "qwen2.5:32b"
   temperature: 0.2
-  max_tokens: 1536   # JSON for 5 variables x 24 h is ~700-900 tokens (Qwen tokenizes numbers digit by digit); 600 truncated every forecast (job 23141406)
+  max_tokens: 2048   # JSON for 5 variables x 24 h is ~700-900 tokens (Qwen tokenizes numbers digit by digit); 600 truncated every forecast (job 23141406), 1536 still truncated 9 (jobs 23143356-23150606)
   request_timeout_s: 180
   num_ctx: 8192
-  # Alternative models for the exploratory model comparison. A variant is
-  # used by appending '@<name>' to an LLM condition in `conditions` below
-  # (e.g. full_pipeline@medgemma); it inherits every llm key above and
-  # overrides only what it lists. Variants not named in `conditions` are
-  # ignored, so these definitions are harmless until you enable them.
-  # Pull each model on a login node first (see jobs/step3_run_experiment_nibi.sh).
-  # gemma3 is medgemma's general-purpose base model at the same quantization,
-  # so gemma3 vs medgemma isolates the effect of medical training.
+  # Model comparison (docs/llm_selection.docx): three general/medical pairs,
+  # each medical model a fine-tune of its general partner.
+  #   ~32B, Q8_0:   qwen2.5:32b (llm.model above, primary) / baichuan_m2
+  #   ~27B, Q4_K_M: gemma3 / medgemma
+  #   ~70B, Q4_K_M: llama3_70b / llama_Med42_70b
+  # A variant is used by appending '@<name>' to an LLM condition in
+  # `conditions` (e.g. full_pipeline@medgemma); it inherits every llm key
+  # above and overrides only what it lists. A variant may set
+  # `critic_variant: <other variant>` to give the critic agent that variant's
+  # model instead of its own (see medgemma_gemma3_critic). Download them all
+  # with: sbatch jobs/prep2_download_models.sh <this config>
   variants:
+    baichuan_m2:
+      # Baichuan-M2-32B: medical fine-tune of Qwen2.5-32B (Apache 2.0, not
+      # gated). Q8_0 to match the primary model's quantization. A reasoning
+      # model, but format=json makes it answer in JSON straight away.
+      model: "hf.co/bartowski/baichuan-inc_Baichuan-M2-32B-GGUF:Q8_0"   # ~35GB
+      alias: "baichuan-m2:32b"
     gemma3:
       model: "gemma3:27b"                                       # Q4_K_M, ~17GB
     medgemma:
-      # Google's MedGemma 27B text model is gated on Hugging Face (accept the
-      # Health AI Developer Foundations terms first). VERIFY this tag pulls
-      # before enabling: `ollama pull hf.co/unsloth/medgemma-27b-text-it-GGUF:Q4_K_M`
+      # MedGemma 27B text (v1): medical fine-tune of Gemma 3 27B. Use is
+      # governed by Google's Health AI Developer Foundations terms.
       model: "hf.co/unsloth/medgemma-27b-text-it-GGUF:Q4_K_M"   # ~17GB
       alias: "medgemma:27b"
+    medgemma_gemma3_critic:
+      # MedGemma forecasts, Gemma 3 corrects implausible values: does a
+      # different critic model help? (Compared in evaluation.extra_comparisons.)
+      model: "hf.co/unsloth/medgemma-27b-text-it-GGUF:Q4_K_M"
+      alias: "medgemma:27b"
+      critic_variant: gemma3
+    llama3_70b:
+      # Llama 3 70B Instruct: Med42's base model (Meta Llama 3 Community Licence).
+      model: "llama3:70b-instruct-q4_K_M"                       # ~43GB
     llama_Med42_70b:
-      # M42 Health's Llama3-Med42-70B (clinical fine-tune of Llama 3 70B),
-      # community GGUF conversion. Set up once on a login node:
-      #   ollama pull hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M
-      #   ollama cp hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M med42:70b
-      # jobs/prep3_med42_nibi.sh checks it loads fully onto one H100.
+      # M42 Health's Llama3-Med42-70B (Med42-v2, clinical fine-tune of Llama 3
+      # 70B), community GGUF conversion. jobs/prep3_med42_nibi.sh checks it
+      # loads fully onto one H100.
       model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
       alias: "med42:70b"
 
@@ -169,17 +185,26 @@ conditions:
   - naive
   - gbm
   - lstm
+  # Primary model (llm.model, Qwen2.5-32B): RQ1-RQ3 and the ablations.
   - single_model_llm
   - full_pipeline
   - full_pipeline_no_critic
   - full_pipeline_no_similarity
-  # Exploratory model comparison (see llm.variants). Grouped by model so
-  # Ollama loads each model once. Each line adds a full pass over the test
-  # split, so check the step 3 --time limit before enabling.
+  # Model comparison (see llm.variants), grouped by model so Ollama loads
+  # each model once. Each line is a full pass over the test split.
+  - single_model_llm@baichuan_m2
+  - full_pipeline@baichuan_m2
   - single_model_llm@gemma3
   - full_pipeline@gemma3
   - single_model_llm@medgemma
   - full_pipeline@medgemma
+  # Agent mix: MedGemma forecaster with a clip-only critic (no LLM), and
+  # with a Gemma 3 critic; compared with full_pipeline@medgemma (MedGemma
+  # critic) under evaluation.extra_comparisons.
+  - full_pipeline_clip_critic@medgemma
+  - full_pipeline@medgemma_gemma3_critic
+  - single_model_llm@llama3_70b
+  - full_pipeline@llama3_70b
   - single_model_llm@llama_Med42_70b
   - full_pipeline@llama_Med42_70b
 
@@ -187,3 +212,27 @@ evaluation:
   bootstrap_resamples: 2000
   bootstrap_alpha: 0.05
   interval_width_pct: 90
+  # Extra paired comparisons [A, B] (A - B per-patient sMAPE, as for the
+  # RQs) in statistical_analysis.json under extra_comparisons.
+  extra_comparisons:
+    # Which critic suits a MedGemma forecaster?
+    - [full_pipeline_clip_critic@medgemma, full_pipeline@medgemma]
+    - [full_pipeline@medgemma_gemma3_critic, full_pipeline@medgemma]
+    - [full_pipeline@medgemma_gemma3_critic, full_pipeline_clip_critic@medgemma]
+    # Does the LLM critic beat clipping, and does the agent mix beat the
+    # primary pipeline?
+    - [full_pipeline_clip_critic@medgemma, full_pipeline]
+    - [full_pipeline@medgemma_gemma3_critic, full_pipeline]
+
+logging:
+  # Live aggregate metrics on Weights & Biases (src/tracking.py): progress,
+  # rates, per-condition metrics, tuning scores, and the job's CPU/GPU
+  # usage. Never log lines, model output or per-patient values; errors are
+  # sent only as a type ("malformed forecast - see logs for details").
+  # One-time setup on a login node: `wandb login`. Without it, or with
+  # enabled: false, runs proceed without tracking.
+  wandb:
+    enabled: true
+    project: mimic-iv-digital-twin
+    entity: null      # your default W&B account
+    mode: online      # offline: write locally, `wandb sync` later

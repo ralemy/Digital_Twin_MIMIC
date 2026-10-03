@@ -123,9 +123,58 @@ e.g. `full_pipeline@medgemma`, where the variant is defined under
 it lists, usually just `model`). Variants not named in `conditions` are
 ignored. `config/config_nibi_lean.yaml` defines `gemma3` and its
 medically-trained derivative `medgemma`, with their conditions commented
-out. `all_conditions_summary.csv` includes an `llm_fallback_rate` column:
-the share of patients whose LLM output couldn't be parsed and was replaced
-by the naive forecast. Check it before comparing models' accuracy.
+out. `all_conditions_summary.csv` includes two columns describing LLM
+output failures, which should be checked before comparing models' accuracy:
+
+- `llm_fallback_rate` — the share of patients whose whole LLM forecast was
+  replaced by the naive forecast. This happens when there's no usable answer,
+  the JSON is invalid, a top-level key is missing, a series has the wrong
+  length, or none of the variables are present.
+- `llm_filled_rate` (per variable) — the share of patients whose otherwise
+  valid forecast left out that variable, so only that variable got the
+  naive forecast (see "Missing variables" under Notes below).
+
+## 4b. Hyperparameter search and interval calibration
+
+Both use only the **validation** split, which is divided once (seeded) into
+a *tuning* subset (128 stays by default) and a *calibration* subset (the
+remaining 322). The test split is never read.
+
+```bash
+python src/tune.py      --config-file config/config_nibi_lean.yaml        # writes config/config_nibi_lean_tuned.yaml
+python src/calibrate.py --config-file config/config_nibi_lean_tuned.yaml  # writes <results_dir>/calibration.json
+python src/run_experiment.py   --config-file config/config_nibi_lean_tuned.yaml
+python src/evaluate_results.py --config-file config/config_nibi_lean_tuned.yaml
+```
+
+On Nibi: `jobs/step3b_tune_nibi.sh` and `jobs/step3c_calibrate_nibi.sh`
+(GPU jobs, same arguments; see their headers).
+
+- **Tuning** (`src/tune.py`, grid in `config/tuning_grid.yaml`) is a
+  sequential search: each round compares the current best settings with a
+  few alternatives on the tuning subset and keeps one only if it lowers
+  mean per-patient sMAPE by at least `min_improvement` without exceeding
+  `max_fallback_rate`. It tunes the GBM and LSTM baselines (so the
+  comparison stays fair), the similarity context and k, the forecasting
+  prompt, temperature and the critic. Results: `<results_dir>/tuning/`
+  (`trials.csv`, `rounds.json`). The tuned config writes to `results_tuned`
+  and `checkpoints_tuned`, so the untuned run's results are kept.
+- **Calibration** (`src/calibrate.py`) runs every condition on the
+  calibration subset and fits one split-conformal scale factor per condition
+  and variable for the prediction intervals. Step 4 applies them to the test
+  forecasts and reports coverage and width before and after
+  (`interval_calibration` in `statistical_analysis.json`); factors fitted
+  for different settings are refused.
+- **Resuming:** both checkpoint per batch of patients like step 3 (and
+  tuning caches every scored setting), so a stopped job continues when
+  resubmitted; `--full-refresh` starts over.
+
+New config options used by tuning (all optional; absent = original
+behaviour): `forecasting_agent.similarity_context` (`horizon_mean` |
+`trajectory`), `forecasting_agent.strict_length`,
+`forecasting_agent.recent_hours`, `baselines.gbm_max_depth`,
+`gbm_max_iter`, `gbm_learning_rate`, `lstm_learning_rate`, `lstm_seed`, and
+`paths.checkpoint_dir`.
 
 ## 5. Statistical analysis
 
@@ -176,7 +225,15 @@ cohort criteria, same conditions/ablations — just sized differently:
   ```
   matching (or exceeding) `llm_max_concurrent_requests` in the config, and
   watch `nvidia-smi` on your first run — if VRAM is tight, lower one or
-  both numbers rather than letting Ollama OOM mid-run.
+  both numbers rather than letting Ollama OOM mid-run. The Nibi GPU jobs
+  start Ollama themselves (`jobs/ollama_lib.sh`) and take both settings
+  from the config:
+  - `OLLAMA_NUM_PARALLEL` is `performance.llm_max_concurrent_requests`, so
+    the two always match.
+  - `OLLAMA_FLASH_ATTENTION` is `performance.ollama_flash_attention`
+    (default off).
+
+  `jobs/bench_ollama_nibi.sh` measures other values before you change them.
 - **GPU-batched LSTM baseline.** With `performance.batch_predict_baselines:
   true`, the LSTM baseline's `predict()` runs once over the whole test
   split in large GPU batches instead of once per patient — the per-patient
@@ -310,6 +367,103 @@ J2=$(sbatch --parsable --dependency=afterok:$J1 jobs/step2_extract_cohort_nibi.s
 J3=$(sbatch --parsable --dependency=afterok:$J2 jobs/step3_run_experiment_nibi.sh  config/config_nibi_lean.yaml)
 J4=$(sbatch --parsable --dependency=afterok:$J3 jobs/step4_evaluate_results_nibi.sh config/config_nibi_lean.yaml)
 ```
+
+### Models and agent combinations
+
+The Nibi configs compare six models in three general/medical pairs (see
+`docs/llm_selection.docx`; `jobs/prep2_download_models.sh` lists them):
+Qwen2.5-32B (primary) / Baichuan-M2-32B, Gemma 3 27B / MedGemma 27B, and
+Llama 3 70B / Med42-70B. Each runs `single_model_llm` and `full_pipeline`;
+the primary model also runs the RQ ablations.
+
+Two more conditions test whether the agents should use different models:
+
+- `full_pipeline_clip_critic@medgemma`: MedGemma forecasts, and out-of-range
+  values are simply clipped to the plausible range (no LLM critic).
+- `full_pipeline@medgemma_gemma3_critic`: MedGemma forecasts, and Gemma 3 is
+  the critic. Any variant can give its critic another variant's model with
+  `critic_variant: <variant>` under `llm.variants`.
+
+`evaluation.extra_comparisons` lists the condition pairs compared for this:
+the clip-only and Gemma 3 critics vs MedGemma's own critic, and vs the
+primary pipeline. They appear under `extra_comparisons` in
+`statistical_analysis.json`, with the same paired test and bootstrap CIs as
+the RQs. The critic's model is recorded in the `critic_model` column of
+`all_conditions_summary.csv`.
+
+### The whole pipeline in one command: `jobs/run_all.sh`
+
+`jobs/run_all.sh` runs every stage for one scope:
+resolve → extract → tune → calibrate → run → evaluate. Calibrate, run and
+evaluate use the tuned config. Run it on a login node, not with `sbatch`:
+
+```bash
+bash jobs/run_all.sh lean --plan            # the jobs and time limits it would use
+bash jobs/run_all.sh lean                   # start, or resume / re-attach
+bash jobs/run_all.sh full --hreb-approved   # 19-variable scope, once the amendment is approved
+bash jobs/run_all.sh lean --status          # stage status, job ids, whether the driver is alive
+bash jobs/run_all.sh lean --stop            # stop the driver; submitted jobs keep running
+bash jobs/run_all.sh lean --unattended      # a whole run with no one watching (see below)
+```
+
+**Unattended runs.** With `--unattended`, a stage that stops on failures
+(failed jobs, a failed `sbatch`, Slurm hiccups) is resubmitted from its
+checkpoints after a cooldown: 15 min, doubling up to 2 h, at most 5 times.
+Time-outs get up to 6 extra jobs, and the driver doesn't pause after
+resolve. Only a job cancelled by you or an administrator, or the retries
+running out, stops it. The first stage, `models`, downloads any missing
+models. A full lean run is about 46 hours of estimated work plus queue
+waits (`--plan` shows the jobs).
+
+**Job sizing.**
+- Each stage's estimated work comes from
+  [docs/runtime_estimates.md](docs/runtime_estimates.md). It is split into
+  jobs of at most 7 h of work, each with a time limit 1 h longer, capped at
+  8 h.
+- A stage's jobs are submitted together as a chain. Job *k+1* depends on
+  `afternotok` of jobs 1..*k*, so it runs only if the earlier jobs ran out
+  of time or failed, and it resumes from the step's checkpoints.
+- When a job completes, Slurm cancels the rest of the chain
+  (`--kill-on-invalid-dep=yes`).
+- If a chain runs out without finishing, one more job is submitted, up to 3
+  times. Two failed jobs in a row stop the driver.
+
+**Resuming.**
+- The driver detaches (`setsid nohup`) and logs to `run_all/<scope>.log`,
+  which the command then follows. Ctrl+C or a dropped SSH connection stops
+  only the following.
+- Running the same command again re-attaches. If the driver died (stopped,
+  or the login node rebooted), it starts a new one, which picks up the
+  submitted jobs from `run_all/<scope>.state`.
+- A stage that failed is resubmitted from its checkpoints once you've fixed
+  the cause.
+- Resolve and extract are skipped if their outputs exist. After resolve runs,
+  the driver stops so you can review `item_mapping.json`; run the command
+  again to continue.
+
+**Live metrics on Weights & Biases.**
+- **Setup:** run `wandb login` once on a login node, then `chmod 600 ~/.netrc`.
+- **What gets logged:** with `logging.wandb.enabled: true` (the Nibi
+  configs' default), each tune, calibrate, run and evaluate job logs to
+  project `mimic-iv-digital-twin`, as a run named
+  `<config>-<stage>-<Slurm job id>` and grouped by stage:
+  - per-batch progress and seconds per batch;
+  - fallbacks, and error counts by type;
+  - per-condition sMAPE, MAE, plausibility, coverage, fill rate;
+  - tuning scores, calibration coverage, the analysis' means, CIs and
+    p-values;
+  - the job's CPU, memory and GPU use.
+- **What is never sent** (`src/tracking.py`): log lines, model output,
+  per-patient values, stay ids or files.
+  - A failed forecast is reported only as its type, e.g. "malformed forecast
+    - see logs for details".
+  - Console capture is off.
+- **If W&B isn't available** (not logged in, unreachable), the job logs one
+  warning and runs without tracking.
+
+**Cluster etiquette.** Slurm is checked every 120 s (`-i`, at least 60)
+through `jobs/monitor-job.sh`, which also prints pending reasons and the
+running job's latest output line. One driver runs per scope.
 
 Only step 3 (`run_experiment.py`) touches the GPU or Ollama — it requests
 `--gpus-per-node=h100:1`, starts `ollama serve` in the background on the
@@ -464,6 +618,30 @@ src/smoke_test.py          synthetic end-to-end test, no real data / no Ollama n
   after `critic_agent.max_correction_attempts`, it is clipped to the nearest
   bound rather than retried indefinitely, so a stubborn generation can never
   block the pipeline.
+- **Missing variables (methodology).** The forecasting prompt asks for every
+  panel variable. When the model returns valid JSON with correct-length
+  series for some variables but leaves others out, the omitted variables get
+  the naive forecast for that variable only: the last observed value carried
+  forward over the horizon, with interval half-width 1.5 × the
+  observation-window SD. The model's forecasts for the other variables are
+  kept.
+  - Before this rule, any omission discarded the whole forecast. In the first
+    lean runs (jobs 23143356–23150606), 58 forecasts were discarded this way,
+    almost all because lactate was left out. Lactate is the most sparsely
+    measured variable, and was often left out when unobserved in the window.
+  - Filled values are scored like any other forecast, so an omission costs
+    the model whatever the naive forecast costs on that variable.
+  - Fills are counted per condition and variable (`llm_filled_rate` in
+    `all_conditions_summary.csv`, `filled_rate` in tuning's `trials.csv`,
+    `llm_filled` in `calibration.json`), and should be reported alongside
+    the whole-forecast fallback rate.
+  - Checkpoints made under the old rule aren't reused: the rule is part of
+    every LLM condition's fingerprint.
+- **Ollama server errors are retried.** An HTTP 5xx from Ollama is retried
+  twice before the call counts as failed. The error body is logged, since
+  Ollama's own log doesn't record the cause. Connection errors (the server is
+  gone, e.g. at the job's time limit) stop the run instead of being recorded
+  as fallbacks.
 - **This is a reference implementation, not a tuned one.** GBM/LSTM
   hyperparameters, the LLM prompt wording, and the similarity feature set are
   all reasonable starting points, not the result of hyperparameter search —

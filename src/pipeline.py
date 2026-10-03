@@ -15,7 +15,7 @@ import numpy as np
 
 from baselines import GBMBaseline, LSTMBaseline, naive_forecast
 from checkpoint import ConditionCheckpoint, RunCheckpoint, model_fingerprint
-from common import LLM_CONDITIONS, cfg_for_llm_variant, get_logger, llm_variants_in_use, split_condition
+from common import LLM_CONDITIONS, cfg_for_llm_variant, critic_variant, get_logger, llm_variants_in_use, split_condition
 from critic_agent import CriticAgent
 from forecasting_agent import ForecastingAgent
 from llm_client import LocalLLM
@@ -42,12 +42,22 @@ def run_condition(
     test_tensors: dict[int, dict],
     fitted_models: dict,
     checkpoint: ConditionCheckpoint | None = None,
+    progress=None,
 ) -> dict:
     """
     Returns {"y_true": ..., "y_pred": ..., "y_lower": ..., "y_upper": ...,
              "plausibility_violations_precritic": int or None,
-             "llm_fallbacks": int or None}
-    all shaped (n_patients, horizon_hours, n_variables) except the last two, scalars.
+             "llm_fallbacks": int or None,
+             "llm_filled": per-variable int array or None}
+    the first four shaped (n_patients, horizon_hours, n_variables).
+    llm_filled counts, per variable, the forecasts that left the variable out
+    and got the naive forecast for it (see ForecastingAgent._fill_missing).
+    "llm_errors" counts the condition's failed LLM calls by type
+    (tracking.ERROR_MESSAGES keys), in the batches computed by this call.
+
+    `progress`, if given, is called after each computed batch with a dict of
+    aggregate numbers (batches done, seconds per batch, fallbacks and errors
+    so far): the live metrics hook (src/tracking.py).
 
     An LLM condition may name a model variant after '@' (e.g.
     'full_pipeline@medgemma'); it then runs with that variant's forecaster
@@ -70,7 +80,19 @@ def run_condition(
     y_upper = np.full_like(y_true, np.nan)
     total_precritic_violations = 0
     total_fallbacks = 0
+    total_filled = np.zeros(y_true.shape[2], dtype=int)
     n_resumed = 0
+    agents = (fitted_models["variants"][split_condition(condition)[1]] if split_condition(condition)[1]
+              else fitted_models) if base in LLM_CONDITIONS else {}
+    errors_before = {name: dict(agent.error_counts) for name, agent in agents.items()
+                     if name in ("forecaster", "critic")}
+
+    def errors_so_far() -> dict[str, int]:
+        out: dict[str, int] = {}
+        for name, before in errors_before.items():
+            for kind, n in agents[name].error_counts.items():
+                out[kind] = out.get(kind, 0) + n - before.get(kind, 0)
+        return {k: v for k, v in out.items() if v}
 
     log.info("Running condition '%s' over %d test patients in %d batches of up to %d "
              "(llm_max_concurrent_requests=%d)...",
@@ -92,11 +114,17 @@ def run_condition(
                 log.info("Condition '%s': batch %d/%d done (%.0fs/batch, ~%.0f min left).",
                          condition, b + 1, n_batches, elapsed / done,
                          elapsed / done * (n_batches - b - 1) / 60)
+            if progress is not None:
+                progress({"condition": condition, "batch": b + 1, "n_batches": n_batches,
+                          "sec_per_batch": (time.time() - t_start) / max(1, b + 1 - n_resumed),
+                          "fallbacks": total_fallbacks + batch["fallbacks"],
+                          "errors": errors_so_far()})
 
         rows = slice(start, start + len(batch_ids))
         y_pred[rows], y_lower[rows], y_upper[rows] = batch["y_pred"], batch["y_lower"], batch["y_upper"]
         total_precritic_violations += batch["violations"]
         total_fallbacks += batch["fallbacks"]
+        total_filled += batch["filled"]
 
     if n_resumed:
         log.info("Condition '%s': %d of %d batches loaded from checkpoint, %d computed.",
@@ -110,6 +138,8 @@ def run_condition(
         "stay_ids": stay_ids,
         "plausibility_violations_precritic": total_precritic_violations if "full_pipeline" in base else None,
         "llm_fallbacks": total_fallbacks if base in LLM_CONDITIONS else None,
+        "llm_filled": total_filled if base in LLM_CONDITIONS else None,
+        "llm_errors": errors_so_far(),
     }
 
 
@@ -123,11 +153,13 @@ def _predict_batch(
 ) -> dict:
     """Predictions for one batch of test patients: {"y_pred", "y_lower",
     "y_upper"} shaped (len(batch_ids), horizon_hours, n_variables), plus this
-    batch's pre-critic plausibility "violations" and LLM "fallbacks" counts."""
+    batch's pre-critic plausibility "violations", LLM "fallbacks" and
+    per-variable "filled" counts."""
     base, variant = split_condition(condition)
     llm_agents = fitted_models["variants"][variant] if variant else fitted_models
-    fallbacks_before = llm_agents["forecaster"].n_fallbacks if base in LLM_CONDITIONS else 0
     variables = [v["name"] for v in cfg["variables"]]
+    fallbacks_before = llm_agents["forecaster"].n_fallbacks if base in LLM_CONDITIONS else 0
+    filled_before = dict(llm_agents["forecaster"].n_filled) if base in LLM_CONDITIONS else {}
     horizon_hours = cfg["cohort"]["forecast_horizon_hours"]
 
     shape = (len(batch_ids), horizon_hours, len(variables))
@@ -193,9 +225,12 @@ def _predict_batch(
                 y_lower[pi] = fcast - interval
                 y_upper[pi] = fcast + interval
 
-    elif base in ("full_pipeline", "full_pipeline_no_critic", "full_pipeline_no_similarity"):
+    elif base in ("full_pipeline", "full_pipeline_no_critic", "full_pipeline_no_similarity",
+                  "full_pipeline_clip_critic"):
         forecaster: ForecastingAgent = llm_agents["forecaster"]
         critic: CriticAgent = llm_agents["critic"]
+        if base == "full_pipeline_clip_critic":
+            critic = CriticAgent(None, cfg, enabled=True, clip_only=True)
         similarity: SimilarityAgent = fitted_models["similarity"]   # model-independent, shared by all variants
         use_similarity = base != "full_pipeline_no_similarity"
         use_critic = base != "full_pipeline_no_critic"
@@ -231,6 +266,8 @@ def _predict_batch(
         "y_upper": y_upper,
         "violations": int(total_precritic_violations),
         "fallbacks": int(llm_agents["forecaster"].n_fallbacks - fallbacks_before) if base in LLM_CONDITIONS else 0,
+        "filled": np.array([llm_agents["forecaster"].n_filled[v] - filled_before[v] for v in variables]
+                           if base in LLM_CONDITIONS else np.zeros(len(variables)), dtype=int),
     }
 
 
@@ -246,6 +283,12 @@ def validate_conditions(cfg: dict) -> None:
             if base not in LLM_CONDITIONS:
                 raise ValueError(f"Condition '{condition}': only LLM conditions take an '@variant'")
             cfg_for_llm_variant(cfg, variant)   # raises if the variant isn't defined
+        cv = critic_variant(cfg, variant) if base in LLM_CONDITIONS else None
+        if cv is not None:
+            cfg_for_llm_variant(cfg, cv)        # raises if the critic's variant isn't defined
+            if critic_variant(cfg, cv) is not None:
+                raise ValueError(f"Condition '{condition}': critic variant '{cv}' sets its own "
+                                 "critic_variant; a critic's model must be a plain variant")
 
 
 def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpoint | None = None) -> dict:
@@ -259,15 +302,21 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
 
     if cfg["baselines"]["run_gbm"]:
         gbm_path = checkpoint.model_path("gbm", model_fingerprint(cfg, "gbm", train_tensors), "gbm.pkl") if checkpoint else None
-        fitted["gbm"] = GBMBaseline(variables, horizon_hours).fit(train_tensors, checkpoint_path=gbm_path)
+        b = cfg["baselines"]
+        fitted["gbm"] = GBMBaseline(variables, horizon_hours, max_depth=b.get("gbm_max_depth", 4),
+                                    max_iter=b.get("gbm_max_iter", 150),
+                                    learning_rate=b.get("gbm_learning_rate", 0.1),
+                                    ).fit(train_tensors, checkpoint_path=gbm_path)
 
     if cfg["baselines"]["run_lstm"]:
         lstm_hidden = cfg["baselines"].get("lstm_hidden_size", 64)
         lstm_epochs = cfg["baselines"].get("lstm_epochs", 100)
         lstm_path = checkpoint.model_path("lstm", model_fingerprint(cfg, "lstm", train_tensors), "lstm.pt") if checkpoint else None
         fitted["lstm"] = LSTMBaseline(variables, horizon_hours, hidden=lstm_hidden).fit(
-            train_tensors, epochs=lstm_epochs, checkpoint_path=lstm_path,
+            train_tensors, epochs=lstm_epochs, lr=cfg["baselines"].get("lstm_learning_rate", 1e-3),
+            checkpoint_path=lstm_path,
             checkpoint_every=cfg["baselines"].get("lstm_checkpoint_every_epochs", 20),
+            seed=cfg["baselines"].get("lstm_seed"),
         )
 
     in_use = llm_variants_in_use(cfg)
@@ -275,10 +324,10 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
     used_variants = [v for v in in_use if v is not None]
 
     if needs_default_llm:
-        fitted.update(_build_llm_agents(cfg))
+        fitted.update(_build_llm_agents(cfg, None))
     fitted["variants"] = {}
     for variant in used_variants:
-        fitted["variants"][variant] = _build_llm_agents(cfg_for_llm_variant(cfg, variant))
+        fitted["variants"][variant] = _build_llm_agents(cfg, variant)
         llm = fitted["variants"][variant]["forecaster"].llm
         log.info("LLM variant '%s' -> model %s (pulled as %s)", variant, llm.model, llm.source_model)
     if needs_default_llm or used_variants:
@@ -287,10 +336,17 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
     return fitted
 
 
-def _build_llm_agents(cfg: dict) -> dict:
-    """Forecaster and critic sharing one LocalLLM built from cfg["llm"]."""
-    llm = LocalLLM(cfg)
+def _build_llm_agents(cfg: dict, variant: str | None) -> dict:
+    """Forecaster and critic for one LLM variant (None = llm.model). They
+    share one LocalLLM, unless the variant sets `critic_variant`: then the
+    critic gets its own, built from that variant's llm settings."""
+    vcfg = cfg_for_llm_variant(cfg, variant)
+    llm = LocalLLM(vcfg)
+    cv = critic_variant(cfg, variant)
+    critic_llm = LocalLLM(cfg_for_llm_variant(cfg, cv)) if cv is not None else llm
+    if cv is not None:
+        log.info("LLM variant '%s': critic uses variant '%s' (model %s).", variant, cv, critic_llm.model)
     return {
-        "forecaster": ForecastingAgent(llm, cfg),
-        "critic": CriticAgent(llm, cfg, enabled=cfg["critic_agent"]["enabled"]),
+        "forecaster": ForecastingAgent(llm, vcfg),
+        "critic": CriticAgent(critic_llm, vcfg, enabled=vcfg["critic_agent"]["enabled"]),
     }
