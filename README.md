@@ -164,8 +164,8 @@ password is never exported to the jobs' child processes.
 which key to fix, if it is missing, readable by others or incomplete — then:
 
 1. **Symlinks.** Creates `mimic-iv` → `$DT_MIMIC_DIR` and `ollama-models` →
-   `$DT_OLLAMA_MODELS` in the repo, plus their target directories and
-   `$DT_RESULTS_DIR`. The configs reach MIMIC-IV through `mimic-iv`.
+   `$DT_OLLAMA_MODELS` in the repo (or re-points them if they lead
+   elsewhere), plus their target directories and `$DT_RESULTS_DIR`. The configs reach MIMIC-IV through `mimic-iv`.
 2. **Ollama, without root.** Downloads the Ollama release
    `environment.ollama_version` (~1.4 GB, from GitHub; login nodes have
    internet access) and unpacks it into the parent of `paths.ollama_bin`
@@ -173,14 +173,18 @@ which key to fix, if it is missing, readable by others or incomplete — then:
    GPU jobs start their own `ollama serve` on the compute node, on a port
    derived from the job id (`jobs/ollama_lib.sh`) — don't run it on the
    login node.
-3. **`.venv`**, the Alliance way, if it doesn't exist yet (below).
+3. **`.venv`**, the Alliance way (below). A valid `.venv` — its python
+   runs, matches the loaded `python/` module and has every pinned package of
+   `requirements.txt` — is kept; anything else (e.g. half-built by a failed
+   run) is removed and rebuilt.
 4. **`~/.bashrc`.** Writes the final values of every variable
    (`DT_REPO`, `DT_MIMIC_DIR`, `DT_RESULTS_DIR`, `DT_OLLAMA_MODELS`,
    `OLLAMA_MODELS`, `SBATCH_ACCOUNT`, ..., and `PATH` with the ollama
    binary) into a marked block at its end, between
    `# >>> mimic-iv digital twin ...` and `# <<< mimic-iv digital twin <<<`.
-   A previous block is replaced, never duplicated, and the old file is kept
-   as `~/.bashrc.dt-backup`. Lines elsewhere in `~/.bashrc` that set the same
+   A previous block is replaced, never duplicated; if nothing changed the
+   file isn't touched, otherwise the old file is kept as
+   `~/.bashrc.dt-backup`. Lines elsewhere in `~/.bashrc` that set the same
    variables are listed so you can delete them (the block comes last and
    wins). The job scripts carry no `--account` of their own, so `sbatch`
    relies on this `SBATCH_ACCOUNT`.
@@ -196,8 +200,10 @@ rm setup.lock && bash jobs/setup_bash.sh && source ~/.bashrc
 
 A failed run leaves no lock: its log is kept as `setup-failed-<time>.log`
 (also git-ignored), and you can run the setup again once the cause is fixed.
-An existing `.venv` and an existing Ollama install are left as they are;
-delete them first to rebuild them.
+Running it again is safe: it only changes what differs from your profile.
+An existing Ollama install is left as it is (delete `bin/ollama` to
+reinstall, e.g. for another `ollama_version`); `.venv` is rebuilt only if
+it isn't valid (delete it to force a rebuild).
 
 Jobs never need the lock or `~/.bashrc`: each one re-reads the profile
 itself (through `jobs/load_profile.sh`, which sources `jobs/setup_bash.sh`

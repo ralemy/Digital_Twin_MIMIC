@@ -15,6 +15,7 @@
 # marked block of ~/.bashrc. It logs everything it prints to setup.lock in
 # the repo base and refuses to run while that file exists; to run it again
 # (e.g. after changing the profile): rm setup.lock && bash jobs/setup_bash.sh
+# Running it again is safe: it only changes what differs from the profile.
 # A failed run leaves no lock: its log is kept as setup-failed-<time>.log.
 #
 #   source jobs/setup_bash.sh   # only reads the profile and sets the variables
@@ -221,9 +222,15 @@ if [ -n "$DT_ACCOUNT" ]; then
     export SBATCH_ACCOUNT SALLOC_ACCOUNT
 fi
 
-# --- one-time setup: only when run, not when sourced -------------------------
+# --- setup: only when run, not when sourced ----------------------------------
+# Every step below is idempotent: running the setup again (rm setup.lock
+# first) only changes what differs from the profile — links are created or
+# re-pointed, a valid .venv and Ollama install are kept, and the ~/.bashrc
+# block is replaced, never duplicated.
+
+# Creates each repo symlink, or re-points it if it leads elsewhere.
 dt_make_links() {
-    local entry name var target link
+    local entry name var target link current
     for entry in "${DT_LINKS[@]}"; do
         name=${entry%%:*}; var=${entry#*:}
         target=${!var}; link="$DT_REPO/$name"
@@ -236,8 +243,18 @@ dt_make_links() {
             return 1
         fi
         mkdir -p "$target"
-        ln -sfn "$target" "$link"
-        echo "   $name -> $target"
+        if [ -L "$link" ]; then
+            current=$(readlink "$link")
+            if [ "$current" = "$target" ]; then
+                echo "   $name -> $target (unchanged)"
+                continue
+            fi
+            ln -sfn "$target" "$link"
+            echo "   $name -> $target (updated; was -> $current)"
+        else
+            ln -s "$target" "$link"
+            echo "   $name -> $target (created)"
+        fi
     done
     mkdir -p "$DT_RESULTS_DIR" "$DT_REPO/logs"
     echo "   results: $DT_RESULTS_DIR/mimic-iv-twin-work{,-full}"
@@ -246,38 +263,102 @@ dt_make_links() {
 
 # Installs the Ollama release DT_OLLAMA_VERSION into the parent of
 # DT_OLLAMA_BIN (bin/ and lib/), unless an ollama binary is already there.
+# The archive is unpacked into a staging directory and bin/ollama is moved
+# into place last, so an interrupted run never leaves a binary that a later
+# run would take for a complete install.
 # No root needed; login nodes have internet access. ~1.4 GB download.
 dt_install_ollama() {
-    local root archive url
+    local root archive url stage installed
+    root=$(dirname "$DT_OLLAMA_BIN")
     if [ -x "$DT_OLLAMA_BIN/ollama" ]; then
-        echo "   already installed: $DT_OLLAMA_BIN/ollama ($("$DT_OLLAMA_BIN/ollama" --version 2>&1 | grep -o 'version is .*' || echo 'version unknown')) — left as is"
+        installed=$("$DT_OLLAMA_BIN/ollama" --version 2>&1 | grep -o 'version is .*' || echo 'version unknown')
+        echo "   already installed: $DT_OLLAMA_BIN/ollama ($installed) — left as is"
+        if [ "$installed" != "version is $DT_OLLAMA_VERSION" ]; then
+            echo "   NOTE: the profile asks for $DT_OLLAMA_VERSION; to switch: rm $DT_OLLAMA_BIN/ollama, then run the setup again"
+        fi
         return 0
     fi
-    root=$(dirname "$DT_OLLAMA_BIN")
     archive="$root/ollama-$DT_OLLAMA_VERSION.tar.zst"
     url="https://github.com/ollama/ollama/releases/download/v$DT_OLLAMA_VERSION/ollama-linux-amd64.tar.zst"
     mkdir -p "$root"
+    # Leftovers of an interrupted run.
+    rm -rf "$root"/.ollama-unpack.* "$root/.ollama.new" "$root"/ollama-*.tar.zst.part
     echo "   downloading Ollama $DT_OLLAMA_VERSION (~1.4 GB) from $url"
     curl -fsSL --retry 3 -o "$archive.part" "$url" || { rm -f "$archive.part"; echo "== Ollama download failed ==" >&2; return 1; }
     mv -f "$archive.part" "$archive"
-    if ! tar --zstd -xf "$archive" -C "$root" 2> /dev/null; then
-        zstd -dc "$archive" | tar -xf - -C "$root" || { echo "== could not unpack $archive ==" >&2; return 1; }
+    stage=$(mktemp -d "$root/.ollama-unpack.XXXXXX")
+    if ! tar --zstd -xf "$archive" -C "$stage" 2> /dev/null; then
+        zstd -dc "$archive" | tar -xf - -C "$stage" || { rm -rf "$stage"; echo "== could not unpack $archive ==" >&2; return 1; }
     fi
     rm -f "$archive"
-    [ -x "$DT_OLLAMA_BIN/ollama" ] || { echo "== $DT_OLLAMA_BIN/ollama not found after unpacking into $root ==" >&2; return 1; }
+    [ -x "$stage/bin/ollama" ] || { rm -rf "$stage"; echo "== bin/ollama not found in the Ollama archive ==" >&2; return 1; }
+    mv "$stage/bin/ollama" "$root/.ollama.new"
+    cp -a "$stage/." "$root/" || { rm -rf "$stage" "$root/.ollama.new"; echo "== could not copy Ollama into $root ==" >&2; return 1; }
+    rm -rf "$stage"
+    mkdir -p "$DT_OLLAMA_BIN"
+    mv -f "$root/.ollama.new" "$DT_OLLAMA_BIN/ollama"
     echo "   installed: $DT_OLLAMA_BIN/ollama ($(du -sh "$root" | cut -f1) in $root)"
 }
 
-dt_make_venv() {
-    local venv="$DT_REPO/.venv"
-    if [ -x "$venv/bin/python" ]; then
-        echo "   .venv exists ($("$venv/bin/python" --version 2>&1)) — left as is; to rebuild: rm -rf .venv, then run the setup again"
-        return 0
+# Prints why $1 (a venv) can't be used, or nothing if it is valid: its python
+# runs, is the same major.minor as the python3 on PATH (the one the modules
+# loaded) and has pip, and every package in requirements.txt is installed at
+# the pinned version.
+dt_venv_problem() {
+    local venv=$1 want have
+    [ -d "$venv" ] || { echo "missing"; return; }
+    "$venv/bin/python" -c 'import sys' 2> /dev/null || { echo "its python doesn't run"; return; }
+    want=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2> /dev/null)
+    have=$("$venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+    if [ -n "$want" ] && [ "$want" != "$have" ]; then
+        echo "it has python $have, the loaded python3 is $want"; return
     fi
+    "$venv/bin/python" -m pip --version > /dev/null 2>&1 || { echo "it has no working pip"; return; }
+    "$venv/bin/python" - "$DT_REPO/requirements.txt" <<'PY' 2>&1
+import re, sys
+from importlib import metadata
+from pip._vendor.packaging.requirements import Requirement
+
+bad = []
+for line in open(sys.argv[1]):
+    line = re.sub(r"(^|\s)#.*", "", line).strip()
+    if not line or line.startswith("-"):
+        continue
+    req = Requirement(line)
+    if req.marker and not req.marker.evaluate():
+        continue
+    try:
+        version = metadata.version(req.name)
+    except metadata.PackageNotFoundError:
+        bad.append(f"{req.name} missing")
+        continue
+    if not req.specifier.contains(version, prereleases=True):
+        bad.append(f"{req.name} {version} (wants {req.specifier})")
+if bad:
+    print("requirements not met: " + ", ".join(bad))
+PY
+}
+
+# Keeps a valid .venv; otherwise removes it and builds it again.
+dt_make_venv() {
+    local venv="$DT_REPO/.venv" problem
     if [ -n "$DT_MODULES" ]; then
         command -v module > /dev/null || { echo "== 'module' isn't available in this shell — run from a login shell ==" >&2; return 1; }
         # shellcheck disable=SC2086  # DT_MODULES is a word list
         module load $DT_MODULES || return 1
+    fi
+    problem=$(dt_venv_problem "$venv") || true
+    if [ -z "$problem" ]; then
+        echo "   .venv is valid ($("$venv/bin/python" --version 2>&1), requirements met) — left as is"
+        return 0
+    fi
+    if [ "$problem" = missing ]; then
+        echo "   no .venv yet — building it"
+    else
+        echo "   .venv is not usable ($problem) — removing and rebuilding it"
+        rm -rf "$venv"
+    fi
+    if [ -n "$DT_MODULES" ]; then
         virtualenv --no-download "$venv" || return 1
         "$venv/bin/pip" install --no-index --upgrade pip || return 1
         "$venv/bin/pip" install --no-index -r "$DT_REPO/requirements.txt" || return 1
@@ -286,26 +367,39 @@ dt_make_venv() {
         "$venv/bin/pip" install --upgrade pip || return 1
         "$venv/bin/pip" install -r "$DT_REPO/requirements.txt" || return 1
     fi
+    problem=$(dt_venv_problem "$venv") || true
+    if [ -n "$problem" ]; then
+        echo "== the new .venv is still not usable: $problem ==" >&2
+        return 1
+    fi
     echo "   .venv built ($("$venv/bin/python" --version 2>&1))"
 }
 
 # Writes the final values into a marked block at the end of ~/.bashrc,
-# replacing the block a previous setup wrote (a backup is kept as
-# ~/.bashrc.dt-backup). Lines elsewhere in ~/.bashrc that set the same
+# replacing the block(s) a previous setup wrote, so variables are never
+# duplicated; PATH gets the ollama directory only if it isn't on it yet.
+# ~/.bashrc is left untouched when nothing changed; otherwise the old file is
+# kept as ~/.bashrc.dt-backup. Lines elsewhere in ~/.bashrc that set the same
 # variables are reported, not changed.
 dt_write_bashrc() {
-    local rc="$HOME/.bashrc" var tmp bin_q others
+    local rc="$HOME/.bashrc" var tmp bin_q others n_begin n_end
     local begin="# >>> mimic-iv digital twin — written by jobs/setup_bash.sh >>>"
     local end="# <<< mimic-iv digital twin <<<"
     touch "$rc"
-    cp -p "$rc" "$rc.dt-backup"
+    n_begin=$(grep -cxF -- "$begin" "$rc" || true)
+    n_end=$(grep -cxF -- "$end" "$rc" || true)
+    if [ "$n_begin" != "$n_end" ]; then
+        echo "== ~/.bashrc has $n_begin start and $n_end end marker lines of the setup's block — fix them by hand" >&2
+        echo "==   (start: $begin / end: $end), then run this again ==" >&2
+        return 1
+    fi
     tmp=$(mktemp "$rc.XXXXXX")
     awk -v b="$begin" -v e="$end" '$0 == b {skip = 1; next} $0 == e {skip = 0; next} !skip' "$rc" > "$tmp"
     others=$(grep -nE '^[[:space:]]*export[[:space:]]+(DT_[A-Z_]+|OLLAMA_MODELS|SBATCH_ACCOUNT|SALLOC_ACCOUNT|AGENTIC_DT_PRJ)=|ollama-local/bin' "$tmp" || true)
     bin_q=$(printf %q "$DT_OLLAMA_BIN")
     {
         echo "$begin"
-        echo "# $(date '+%F %T') from $DT_PROFILE — change the profile and re-run the setup, not this block"
+        echo "# from $DT_PROFILE — change the profile and re-run the setup, not this block"
         for var in "${DT_EXPORTS[@]}"; do
             echo "export $var=$(printf %q "${!var}")"
         done
@@ -318,9 +412,14 @@ dt_write_bashrc() {
         echo "case \":\$PATH:\" in *:$bin_q:*) ;; *) export PATH=$bin_q:\"\$PATH\" ;; esac"
         echo "$end"
     } >> "$tmp"
-    cat "$tmp" > "$rc"
+    if cmp -s "$tmp" "$rc"; then
+        echo "   ~/.bashrc: block already up to date — unchanged"
+    else
+        cp -p "$rc" "$rc.dt-backup"
+        cat "$tmp" > "$rc"
+        echo "   ~/.bashrc: block written (previous version kept as ~/.bashrc.dt-backup)"
+    fi
     rm -f "$tmp"
-    echo "   ~/.bashrc: block written (previous version kept as ~/.bashrc.dt-backup)"
     if [ -n "$others" ]; then
         echo "   NOTE: these lines elsewhere in ~/.bashrc set related variables; the block comes"
         echo "   after them and wins, but you may want to delete them:"
