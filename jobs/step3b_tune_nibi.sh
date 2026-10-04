@@ -12,26 +12,26 @@
 # Resuming: every setting is checkpointed per batch of patients and cached
 # once scored, so after a time limit or failure just submit it again — or
 # chain a continuation up front:
-#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
-#   JOB=$(sbatch --parsable jobs/step3b_tune_nibi.sh config/config_nibi_lean.yaml)
-#   sbatch --dependency=afterany:$JOB jobs/step3b_tune_nibi.sh config/config_nibi_lean.yaml
+#   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
+#   JOB=$(sbatch --parsable jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml)
+#   sbatch --dependency=afterany:$JOB jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml
 # Other arguments after the config go to tune.py:
-#   sbatch jobs/step3b_tune_nibi.sh config/config_nibi_lean.yaml --grid config/my_grid.yaml
-#   sbatch jobs/step3b_tune_nibi.sh config/config_nibi_lean.yaml --full-refresh
+#   sbatch jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml --grid config/my_grid.yaml
+#   sbatch jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml --full-refresh
 #
 # Then: step3c (calibration) and step 3 with the tuned config, e.g.
-#   sbatch jobs/step3c_calibrate_nibi.sh config/config_nibi_lean_tuned.yaml
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_nibi_lean_tuned.yaml
+#   sbatch jobs/step3c_calibrate_nibi.sh config/config_alliance_lean_tuned.yaml
+#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_lean_tuned.yaml
 #
-# Paths (repo, MIMIC-IV, Ollama models, modules) come from
-# jobs/setup_bash.sh, picked by cluster. Submit from the repository base.
+# Locations, account and modules come from your profile
+# (~/.config/dt_profile.yml), read by jobs/setup_bash.sh. Submit from the repository base.
 # =============================================================================
 #SBATCH --job-name=mimic-twin-step3b-tune
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64000M
 #SBATCH --time=08:00:00
-#SBATCH --output=%x-%j.out
+#SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
 set -euo pipefail
 
@@ -41,10 +41,10 @@ load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
 cd "$DT_REPO"
-CONFIG="${1:-config/config_nibi_lean.yaml}"
+CONFIG="${1:-config/config_alliance_lean.yaml}"
 echo "== job ${SLURM_JOB_ID:-local} starting on $(hostname) at $(date) — config=$CONFIG =="
 
-module load $DT_MODULES          # jobs/setup_bash.sh
+module load $DT_MODULES          # environment.modules in your profile
 source "$DT_REPO/.venv/bin/activate"
 source jobs/ollama_lib.sh
 start_ollama "$CONFIG"         # OLLAMA_NUM_PARALLEL / FLASH_ATTENTION from the config

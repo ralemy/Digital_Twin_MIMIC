@@ -25,9 +25,9 @@ seeded subset as src/tune.py); the test split is never read. Nothing is
 checkpointed — this measures speed, it isn't part of the experiment.
 
 Usage:
-    python src/bench_ollama.py --config-file config/config_nibi_lean.yaml --label np4_fa0 --parallel 4
-    python src/bench_ollama.py --config-file config/config_nibi_lean.yaml --probe llama_Med42_70b --num-ctx 12288 --label np8_fa1
-    python src/bench_ollama.py --config-file config/config_nibi_lean.yaml --summary
+    python src/bench_ollama.py --config-file config/config_alliance_lean.yaml --label np4_fa0 --parallel 4
+    python src/bench_ollama.py --config-file config/config_alliance_lean.yaml --probe llama_Med42_70b --num-ctx 12288 --label np8_fa1
+    python src/bench_ollama.py --config-file config/config_alliance_lean.yaml --summary
 Writes (appends):
     <results_dir>/ollama_bench/bench-<SLURM_JOB_ID>.jsonl
 """

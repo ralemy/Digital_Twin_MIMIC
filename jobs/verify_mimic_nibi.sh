@@ -10,21 +10,21 @@
 # PhysioNet (delete it first rather than resuming the partial file).
 #
 #
-# Paths (repo, MIMIC-IV, Ollama models, modules) come from
-# jobs/setup_bash.sh, picked by cluster. Submit from the repository base:
-#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
+# Locations, account and modules come from your profile
+# (~/.config/dt_profile.yml), read by jobs/setup_bash.sh. Submit from the repository base:
+#   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
 #   sbatch jobs/verify_mimic_nibi.sh [path/to/mimic-iv]
-# The MIMIC-IV directory defaults to $DT_MIMIC_DIR (jobs/setup_bash.sh) if omitted.
+# The MIMIC-IV directory defaults to $DT_MIMIC_DIR (paths.mimic_dir in your profile) if omitted.
 # =============================================================================
 #SBATCH --job-name=mimic-twin-verify-data
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1000M
 #SBATCH --time=00:45:00
-#SBATCH --output=%x-%j.out
+#SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
 set -euo pipefail
 
-# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
     || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }

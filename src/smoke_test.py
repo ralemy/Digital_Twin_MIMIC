@@ -9,7 +9,7 @@ correctly on your machine BEFORE pointing it at real, credentialed MIMIC-IV
 data. Takes well under a minute.
 
 Usage:
-    python src/smoke_test.py [--config-file config/config.yaml]
+    python src/smoke_test.py [--config-file config/config_alliance_lean.yaml]   # the default
 """
 from __future__ import annotations
 

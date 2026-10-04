@@ -1,51 +1,31 @@
 # =============================================================================
-# Same 5-variable panel as config.yaml — the version
-# already described to UVic's HREB — sized to run as a Slurm batch job on
-# an Alliance cluster (Nibi, Rorqual), one H100 80GB GPU per job, instead
-# of on a local machine. Run with jobs/run_all.sh lean.
+# FULL SCOPE — the 19-variable panel, sized to run as a Slurm batch job on an
+# Alliance cluster (Nibi, Rorqual), one H100 80GB GPU per job.
 #
-# Same variable panel and cohort criteria as config.yaml (the 1080 Ti
-# local config); only the sizing differs, to use the H100: a larger cohort
-# (max_patients 3000 vs 300), a stronger local model (qwen2.5:32b vs
-# llama3.1:8b) plus the comparison models under llm.variants, concurrent
-# LLM requests, a bigger LSTM baseline, checkpointing, and DuckDB/CPU
-# numbers capped to Nibi's documented "no more than 14 CPU cores per GPU"
-# guideline. No new variables and no cloud/API calls — the same experiment
-# and scope already represented to the Board, on different infrastructure.
+# Same sizing as config_alliance_lean.yaml, but a much larger physiological
+# variable panel: the 5 core variables (heart rate, respiratory rate, SpO2,
+# MAP, lactate) plus 3 vitals and 11 labs. This is a scope change, not a
+# hardware one: ethics approval obtained for the 5-variable panel does not
+# automatically cover this one. Ensure the approval you hold covers the
+# panel you run before using this file with real MIMIC-IV data — see
+# README.md, "Before you start: approvals and permissions".
 #
-# IMPORTANT — read before submitting a job with this file:
-#   1. MIMIC-IV DUA / data custody: confirm that Nibi's storage meets
-#      PhysioNet's Data Use Agreement requirements for where credentialed
-#      data may be stored before uploading anything here. This file assumes
-#      that's been checked; it isn't this file's job to check it for you.
-#   2. The CPU/GPU/RAM numbers below (cpus-per-task, mem, duckdb_threads)
-#      are conservative starting points based on Nibi's public "no more
-#      than 14 CPU cores per GPU" guidance, not a confirmed per-node spec
-#      sheet (Nibi's own wiki page was not reachable while preparing this
-#      file). Check `sinfo -o "%N %c %m %G"` on Nibi once you have an
-#      account session, and raise these if a full node's worth is actually
-#      available to a single-GPU job.
-#   3. Ollama itself must already be running on 127.0.0.1:11434 before the
-#      Python steps run — the GPU jobs start it (jobs/ollama_lib.sh).
-#      This config does not start Ollama; it only talks to it.
+# Differences from config_alliance_lean.yaml: the variable panel (19 vs 5),
+# llm.max_tokens/num_ctx (longer JSON output and prompt), and work_dir
+# (separate from the lean job's, so the two never collide on disk).
+# Same cluster/hardware caveats as config_alliance_lean.yaml apply — read
+# that file's header comments too.
 # =============================================================================
 
+# mimic-iv is the repo's symlink to $DT_MIMIC_DIR; $DT_RESULTS_DIR is set in
+# your profile (paths.results_dir), via jobs/setup_bash.sh.
 paths:
-  # mimic-iv is the repo's symlink to $DT_MIMIC_DIR; $DT_RESULTS_DIR is where
-  # results are recorded. Both are set per cluster in jobs/setup_bash.sh —
-  # change locations there, not here. Keep results on project space, not
-  # scratch (purged after 60 days of inactivity): they are needed for the
-  # dissertation.
   mimic_root: "mimic-iv"
-  work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work"
-  cache_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work/cache"
-  results_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work/results"
+  work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full"
+  cache_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full/cache"
+  results_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full/results"
 
 performance:
-  # Nibi's own guidance is "no more than 14 CPU cores" per GPU requested —
-  # the GPU jobs request --cpus-per-task=12, leaving 2 cores of
-  # headroom under that ceiling for Slurm/OS overhead rather than requesting
-  # right up against the documented limit.
   duckdb_threads: 10
   duckdb_memory_limit_gb: 120      # leaves ~80 GB of step 2's 192000M Slurm allocation for pandas/Python; DuckDB spills to $SLURM_TMPDIR past this
   llm_max_concurrent_requests: 8   # requests the pipeline sends at once; the Nibi jobs also start Ollama with OLLAMA_NUM_PARALLEL = this (jobs/ollama_lib.sh). 8 + flash attention: 1.69x the speed of 4 without, same fallbacks/sMAPE (benchmark job 23198298)
@@ -62,6 +42,11 @@ cohort:
   min_age_years: 18
   min_icu_stay_hours: 48
   first_stay_only: true
+  # 19 variables means a patient needs 50% coverage across a much larger
+  # panel to be included — more of the cohort fails this filter than under
+  # the 5-variable panel, where broad availability was one of the selection
+  # criteria (Section 5.3/5.4). Expect fewer than 3000 eligible patients
+  # before max_patients even applies.
   min_panel_coverage: 0.5
   observation_window_hours: 24
   forecast_horizon_hours: 24
@@ -70,7 +55,7 @@ cohort:
   val_frac: 0.15
   test_frac: 0.15
   random_seed: 42
-  max_patients: 3000               # set to null once timed
+  max_patients: 3000
 
 variables:
   - name: heart_rate
@@ -103,6 +88,89 @@ variables:
     fluids: ["Blood"]
     plausible_range: [0.1, 30]
     unit: "mmol/L"
+  # --- added vitals (icu/chartevents) ---
+  - name: sbp
+    source: icu_chartevents
+    label_patterns: ["Non Invasive Blood Pressure systolic", "Arterial Blood Pressure systolic", "ART BP Systolic"]
+    plausible_range: [40, 250]
+    unit: "mmHg"
+  - name: dbp
+    source: icu_chartevents
+    label_patterns: ["Non Invasive Blood Pressure diastolic", "Arterial Blood Pressure diastolic", "ART BP Diastolic"]
+    plausible_range: [20, 150]
+    unit: "mmHg"
+  - name: temperature
+    source: icu_chartevents
+    label_patterns: ["Temperature Fahrenheit"]
+    plausible_range: [86, 110]
+    unit: "°F"
+  # --- added labs (hosp/labevents) ---
+  - name: creatinine
+    source: hosp_labevents
+    label_patterns: ["Creatinine"]
+    fluids: ["Blood"]
+    plausible_range: [0.1, 20]
+    unit: "mg/dL"
+  - name: bun
+    source: hosp_labevents
+    label_patterns: ["Urea Nitrogen"]
+    fluids: ["Blood"]
+    plausible_range: [1, 200]
+    unit: "mg/dL"
+  - name: sodium
+    source: hosp_labevents
+    label_patterns: ["Sodium"]
+    fluids: ["Blood"]
+    plausible_range: [100, 180]
+    unit: "mEq/L"
+  - name: potassium
+    source: hosp_labevents
+    label_patterns: ["Potassium"]
+    fluids: ["Blood"]
+    plausible_range: [1.5, 9]
+    unit: "mEq/L"
+  - name: wbc
+    source: hosp_labevents
+    label_patterns: ["White Blood Cells"]
+    plausible_range: [0.1, 100]
+    unit: "K/uL"
+  - name: platelet
+    source: hosp_labevents
+    label_patterns: ["Platelet Count"]
+    plausible_range: [1, 1200]
+    unit: "K/uL"
+  - name: hemoglobin
+    source: hosp_labevents
+    label_patterns: ["Hemoglobin"]
+    match: exact                               # substring match picks up Carboxy-/Met-hemoglobin, Hb A1c, fetal Hb, ...
+    fluids: ["Blood"]
+    plausible_range: [2, 22]
+    unit: "g/dL"
+  - name: bicarbonate
+    source: hosp_labevents
+    label_patterns: ["Bicarbonate"]
+    fluids: ["Blood"]
+    plausible_range: [5, 50]
+    unit: "mEq/L"
+  - name: glucose
+    source: hosp_labevents
+    label_patterns: ["Glucose"]
+    fluids: ["Blood"]
+    plausible_range: [10, 1000]
+    unit: "mg/dL"
+  - name: bilirubin_total
+    source: hosp_labevents
+    label_patterns: ["Bilirubin, Total"]
+    fluids: ["Blood"]
+    plausible_range: [0.1, 50]
+    unit: "mg/dL"
+  - name: ph
+    source: hosp_labevents
+    label_patterns: ["pH"]
+    match: exact                               # "pH" as a substring matches ~130 labels (Phosphate, Lymphocytes, ...)
+    fluids: ["Blood"]
+    plausible_range: [6.8, 7.8]
+    unit: ""
 
 deterioration_labels:
   vasopressor_itemid_labels: ["Norepinephrine", "Epinephrine", "Vasopressin", "Phenylephrine", "Dopamine"]
@@ -111,19 +179,12 @@ deterioration_labels:
 llm:
   backend: "ollama"
   ollama_host: "http://127.0.0.1:11434"
-  model: "qwen2.5:32b-instruct-q8_0"   # ~34GB weights — comfortable on an 80GB H100, a much stronger model than config.yaml's 8B
-  alias: "qwen2.5:32b"                     # optional short name for the model, used in results and pre-flight checks
-  # Optional `alias`, here or in any variant: a short local name for `model`,
-  # created once on a login node with `ollama cp <model> <alias>`. When set,
-  # the pipeline calls Ollama by the alias (and the job's pre-flight check
-  # looks for it in `ollama list`); results record it in the llm_model column.
-  # `model` stays the tag to pull. A variant that sets its own `model` does
-  # not inherit the alias above.
-  # alias: "qwen2.5:32b"
+  model: "qwen2.5:32b-instruct-q8_0"
+  alias: "qwen2.5:32b"
   temperature: 0.2
-  max_tokens: 2048   # JSON for 5 variables x 24 h is ~700-900 tokens (Qwen tokenizes numbers digit by digit); 600 truncated every forecast (job 23141406), 1536 still truncated 9 (jobs 23143356-23150606)
-  request_timeout_s: 180
-  num_ctx: 8192
+  max_tokens: 4096   # JSON for 19 variables x 24 h is ~2,500-3,500 tokens; 1800 would truncate every forecast
+  request_timeout_s: 600   # a 19-variable forecast takes ~2-2.5 min at the median (~3.7x the lean one); the lean tail reached 4x the median
+  num_ctx: 12288
   # Model comparison (docs/llm_selection.docx): three general/medical pairs,
   # each medical model a fine-tune of its general partner.
   #   ~32B, Q8_0:   qwen2.5:32b (llm.model above, primary) / baichuan_m2
@@ -158,12 +219,14 @@ llm:
     llama3_70b:
       # Llama 3 70B Instruct: Med42's base model (Meta Llama 3 Community Licence).
       model: "llama3:70b-instruct-q4_K_M"                       # ~43GB
+      num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
     llama_Med42_70b:
       # M42 Health's Llama3-Med42-70B (Med42-v2, clinical fine-tune of Llama 3
       # 70B), community GGUF conversion. jobs/prep3_med42_nibi.sh checks it
       # loads fully onto one H100.
       model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
       alias: "med42:70b"
+      num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
 
 similarity_agent:
   k_neighbors: 30

@@ -7,8 +7,8 @@ configured condition over the held-out test split, and writes raw forecast
 arrays + a per-condition metrics summary to <results_dir>.
 
 Usage:
-    python src/run_experiment.py --config-file config/config.yaml
-    python src/run_experiment.py --config-file config/config.yaml --full-refresh
+    python src/run_experiment.py --config-file config/config_local.yaml
+    python src/run_experiment.py --config-file config/config_local.yaml --full-refresh
 
 Resuming: progress is checkpointed under <work_dir>/checkpoints/run_experiment/
 (see src/checkpoint.py) — GBM per variable, LSTM every few epochs, and every
@@ -21,11 +21,11 @@ after changing prompts or code, which checkpoints can't detect (config or
 cohort changes are detected and stop the run with a message).
 
 Prerequisites:
-    1. python src/resolve_items.py --config-file config/config.yaml
-    2. python src/extract_cohort.py --config-file config/config.yaml
+    1. python src/resolve_items.py --config-file config/config_local.yaml
+    2. python src/extract_cohort.py --config-file config/config_local.yaml
     3. Ollama running locally with the configured model pulled
        (skip step 3 and set baselines.run_single_model_llm: false and drop
-       full_pipeline* from `conditions` in config.yaml if you only want to
+       full_pipeline* from `conditions` in the config if you only want to
        smoke-test the naive/GBM/LSTM baselines without a local LLM).
 """
 from __future__ import annotations

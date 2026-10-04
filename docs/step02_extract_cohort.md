@@ -3,7 +3,7 @@
 This page walks through `src/extract_cohort.py` from the top down: first what
 the script does as a whole, then `main()`, then every function `main()` calls,
 in the order it calls them. Configuration values come from
-`config/config_nibi_lean.yaml` on Nibi, where
+`config/config_alliance_lean.yaml` on Nibi, where
 
 ```
 $DT_REPO        = where the repo is cloned
@@ -11,8 +11,7 @@ $DT_MIMIC_DIR   = where MIMIC-IV is downloaded (the repo's mimic-iv symlink)
 $DT_RESULTS_DIR = where results are recorded
 ```
 
-(all three set per cluster in `jobs/setup_bash.sh`; on Nibi `$DT_RESULTS_DIR`
-is the repo itself).
+(set from your profile, `~/.config/dt_profile.yml`, by `jobs/setup_bash.sh`).
 
 > **About the sample rows.** Every patient-level row on this page
 > (`subject_id`, `stay_id`, timestamps, measured values) is **invented** for
@@ -66,7 +65,7 @@ assigns each stay to train / val / test.
 
 ### Example input
 
-From `config/config_nibi_lean.yaml`:
+From `config/config_alliance_lean.yaml`:
 
 ```yaml
 cohort:
@@ -172,9 +171,9 @@ path.
 3. It calls `main(args.config_file)`.
 
 ```
-$ python src/extract_cohort.py --config-file config/config_nibi_lean.yaml
-  → args.config_file = "config/config_nibi_lean.yaml"
-  → main("config/config_nibi_lean.yaml")
+$ python src/extract_cohort.py --config-file config/config_alliance_lean.yaml
+  → args.config_file = "config/config_alliance_lean.yaml"
+  → main("config/config_alliance_lean.yaml")
 ```
 
 At import time the module also creates its logger with
@@ -189,7 +188,7 @@ At import time the module also creates its logger with
 choose eligible stays, cache the raw measurements, resample and filter, split,
 write the two output files.
 
-`config_path` arrives as `"config/config_nibi_lean.yaml"`.
+`config_path` arrives as `"config/config_alliance_lean.yaml"`.
 
 1. **Load the config.** `cfg = load_config(config_path)` (see
    [resolve_items.md](resolve_items.md#load_configconfig_path--srccommonpy))

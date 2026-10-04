@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # The whole pipeline for one scope, as Slurm jobs — run on a LOGIN NODE:
-#   bash jobs/run_all.sh lean                    # 5-variable panel
-#   bash jobs/run_all.sh full --hreb-approved    # 19-variable panel
+#   bash jobs/run_all.sh [lean]                  # 5-variable panel (the default scope)
+#   bash jobs/run_all.sh full                    # 19-variable panel
 #   bash jobs/run_all.sh lean --plan             # show the jobs it would submit
 #   bash jobs/run_all.sh lean --status           # what's done / running
 #   bash jobs/run_all.sh lean --stop             # stop the driver (not the jobs)
@@ -21,7 +21,7 @@
 #   calibrate  step3c_calibrate_nibi.sh        <tuned config>
 #   run        step3_run_experiment_nibi.sh    <tuned config>
 #   evaluate   step4_evaluate_results_nibi.sh  <tuned config>
-# lean = config/config_nibi_lean.yaml, full = config/config_nibi_full_variables.yaml.
+# lean = config/config_alliance_lean.yaml, full = config/config_alliance_full.yaml.
 # evaluate writes statistical_analysis.json (RQ1-RQ3) to the tuned results_dir.
 # resolve/extract are skipped if their outputs already exist. After resolve
 # runs, the driver stops so item_mapping.json can be reviewed; run the same
@@ -102,14 +102,13 @@ declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=720 [calibrate]
 usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 ORIG_ARGS=("$@")
-SCOPE=""; ACTION=run; FOREGROUND=0; HREB=0; REDO_EXTRACT=0; UNATTENDED=0; REDO=""
+SCOPE=""; ACTION=run; FOREGROUND=0; REDO_EXTRACT=0; UNATTENDED=0; REDO=""
 PROFILE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         lean|full) SCOPE=$1; shift ;;
         -i|--interval) INTERVAL="${2:-}"; shift 2 ;;
         --foreground) FOREGROUND=1; shift ;;
-        --hreb-approved) HREB=1; shift ;;
         --redo-extract) REDO_EXTRACT=1; shift ;;
         --unattended) UNATTENDED=1; shift ;;
         --redo) REDO="${2:-}"; shift 2 ;;
@@ -123,7 +122,7 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; usage 1 ;;
     esac
 done
-[ -n "$SCOPE" ] || { echo "== say which scope: lean or full ==" >&2; usage 1; }
+SCOPE=${SCOPE:-lean}                # config/config_alliance_lean.yaml unless "full" is given
 if ! [[ "$INTERVAL" =~ ^[0-9]+$ ]] || [ "$INTERVAL" -lt 60 ]; then
     echo "== interval must be a whole number of seconds, at least 60 (Alliance: don't poll Slurm more often) ==" >&2
     exit 1
@@ -138,16 +137,15 @@ load_profile "${PROFILE_ARGS[@]}" || exit 1
 cd "$DT_REPO" || exit 1
 
 if [ "$SCOPE" = lean ]; then
-    CONFIG=config/config_nibi_lean.yaml
+    CONFIG=config/config_alliance_lean.yaml
     declare -n EST=EST_LEAN
 else
-    CONFIG=config/config_nibi_full_variables.yaml
+    CONFIG=config/config_alliance_full.yaml
     declare -n EST=EST_FULL
 fi
 TUNED="${CONFIG%.yaml}_tuned.yaml"
 RERUN="bash jobs/run_all.sh $SCOPE"
 [ "$UNATTENDED" -eq 1 ] && RERUN+=" --unattended"
-[ "$SCOPE" = full ] && RERUN+=" --hreb-approved"
 
 RUN_DIR=run_all
 mkdir -p "$RUN_DIR"
@@ -156,6 +154,7 @@ LOG="$RUN_DIR/$SCOPE.log"
 HEARTBEAT="$RUN_DIR/$SCOPE.heartbeat"
 DRIVER="$RUN_DIR/$SCOPE.driver"     # "<host> <pid>" of the live driver
 STOP_FILE="$RUN_DIR/$SCOPE.stop"
+LOGDIR_FILE="$RUN_DIR/$SCOPE.logdir"   # the current/last driver's job-log directory
 
 log() { echo "[$(date '+%m-%d %H:%M:%S')] $*" >&2; }
 
@@ -223,6 +222,8 @@ show_status() {
     done
     if driver_alive; then echo "== driver running: $(cat "$DRIVER" 2>/dev/null) (log: $LOG) =="
     else echo "== no driver running — re-run 'bash jobs/run_all.sh $SCOPE' to resume =="; fi
+    [ -f "$LOGDIR_FILE" ] && echo "== job logs (latest driver): $(cat "$LOGDIR_FILE")/ =="
+    return 0
 }
 
 # --- Slurm ---------------------------------------------------------------------
@@ -275,7 +276,7 @@ submit_chain() {
     for m in $(plan_chain "$est"); do
         dep=()
         [ ${#ids[@]} -gt 0 ] && dep=(--dependency="afternotok:$(IFS=:; echo "${ids[*]}")" --kill-on-invalid-dep=yes)
-        if ! jid=$(sbatch --parsable --time="$(hhmm "$m")" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}"); then
+        if ! jid=$(sbatch --parsable --time="$(hhmm "$m")" --output="$DT_LOG_DIR/%x-%j.out" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}"); then
             log "$stage: sbatch failed"
             [ ${#ids[@]} -gt 0 ] && scancel "${ids[@]}"
             return 1
@@ -314,7 +315,7 @@ watch_chain() {
                 return 3 ;;
             *)
                 FAILS=$((FAILS + 1))
-                out=$(ls ./*-"${ids[i]}".out 2>/dev/null | head -n 1)
+                out=$(ls logs/*-"${ids[i]}".out logs/*/*-"${ids[i]}".out 2>/dev/null | head -n 1)
                 log "$stage: job ${ids[i]} $st — see ${out:-its .out file}"
                 if [ "$FAILS" -ge "$MAX_FAILS" ]; then
                     log "$stage: $FAILS jobs in a row failed — stopping"
@@ -428,13 +429,6 @@ case "$ACTION" in
         exit 0 ;;
 esac
 
-if [ "$SCOPE" = full ] && [ "$HREB" -eq 0 ]; then
-    echo "== the 19-variable panel is not covered by the current UVic HREB approval" >&2
-    echo "== (see config/config_nibi_full_variables.yaml). Once the amendment is approved," >&2
-    echo "== run: bash jobs/run_all.sh full --hreb-approved ==" >&2
-    exit 1
-fi
-
 # Detach: start the driver in its own session, then follow its log.
 if [ "$FOREGROUND" -eq 0 ]; then
     if driver_alive; then
@@ -467,6 +461,15 @@ if [ -z "${RUN_ALL_DETACHED:-}" ]; then
 fi
 echo "$(hostname) $$" > "$DRIVER"
 touch "$HEARTBEAT"
+
+# This run's job logs: every job this driver submits writes its Slurm output
+# and its Ollama log here (sbatch --output, and DT_LOG_DIR in the job's
+# environment), so one unattended run's logs are together.
+RUN_LOG_DIR="logs/run_all-$SCOPE-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN_LOG_DIR"
+DT_LOG_DIR="$DT_REPO/$RUN_LOG_DIR"
+export DT_LOG_DIR
+echo "$RUN_LOG_DIR" > "$LOGDIR_FILE"
 
 # TERM a process and everything below it (except the caller), children first.
 # Bash runs the driver's TERM trap only once its current child (a
@@ -515,6 +518,7 @@ if [ -n "$REDO" ]; then
     done
 fi
 log "== run_all $SCOPE: $CONFIG, checking Slurm every ${INTERVAL}s (host $(hostname), pid $$) =="
+log "== job and Ollama logs of this run: $RUN_LOG_DIR/ =="
 show_plan >&2
 
 for stage in "${STAGES[@]}"; do

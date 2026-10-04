@@ -13,7 +13,7 @@ from typing import Callable
 
 import yaml
 
-DEFAULT_CONFIG_PATH = "config/config.yaml"
+DEFAULT_CONFIG_PATH = "config/config_alliance_lean.yaml"   # when --config-file is omitted
 # The repository base: relative paths in a config (e.g. the mimic-iv link) are
 # relative to it, not to the current directory.
 REPO_DIR = Path(__file__).resolve().parents[1]
@@ -46,14 +46,14 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
 
-    # Every path entry: expand $ENV_VARS (e.g. $DT_RESULTS_DIR, set by
-    # jobs/setup_bash.sh) and ~, then make a relative path relative to the
+    # Every path entry: expand $ENV_VARS (e.g. $DT_RESULTS_DIR, set from the
+    # profile by jobs/setup_bash.sh) and ~, then make a relative path relative to the
     # repository base — e.g. "mimic-iv" is the repo's mimic-iv link.
     for key, val in cfg["paths"].items():
         expanded = os.path.expandvars(val)
         if "$" in expanded:
             raise ValueError(f"paths.{key} in {config_path} uses an unset variable ({val!r}) — "
-                             "run `source jobs/setup_bash.sh` first")
+                             "run the setup (README, section 1), then `source ~/.bashrc`")
         path = Path(expanded).expanduser()
         cfg["paths"][key] = str(path if path.is_absolute() else REPO_DIR / path)
 
@@ -70,7 +70,7 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
 
 def get_duckdb_connection(cfg: dict):
     """One place that configures every DuckDB connection in this project, so
-    the thread/memory budget set in config.yaml's `performance` section is
+    the thread/memory budget set in the config's `performance` section is
     honoured everywhere (src/resolve_items.py and src/extract_cohort.py both
     call this instead of duckdb.connect() directly). DuckDB does not use the
     GPU — this only affects the CPU/RAM-bound extraction step — but on a
@@ -250,6 +250,6 @@ def require_mimic_layout(cfg: dict) -> None:
             f"{missing}. This project assumes the raw PhysioNet export is placed at "
             f"{cfg['paths']['mimic_root']}/hosp and {cfg['paths']['mimic_root']}/icu "
             "(the standard MIMIC-IV directory layout, files may be .csv or .csv.gz). "
-            "mimic_root is normally the repo's mimic-iv link: check DT_MIMIC_DIR in "
-            "jobs/setup_bash.sh and run `bash jobs/setup_bash.sh`."
+            "mimic_root is normally the repo's mimic-iv link: check paths.mimic_dir in "
+            "your profile (~/.config/dt_profile.yml) and run `bash jobs/setup_bash.sh`."
         )

@@ -6,14 +6,14 @@
 # full_pipeline*), against the local Ollama server. Requires steps 1 and 2
 # to already be done (item_mapping.json + cohort/panel parquet files).
 #
-# Paths (repo, MIMIC-IV, Ollama models, modules) come from
-# jobs/setup_bash.sh, picked by cluster. Submit from the repository base:
+# Locations, account and modules come from your profile
+# (~/.config/dt_profile.yml), read by jobs/setup_bash.sh. Submit from the repository base:
 #
 # Works for either scope — pass the config file as the first argument:
-#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_nibi_lean.yaml
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_nibi_full_variables.yaml
-# Defaults to config_nibi_lean.yaml (the HREB-approved scope) if omitted.
+#   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
+#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml
+#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_full.yaml
+# Defaults to config_alliance_lean.yaml if omitted.
 # --time=08:00:00 below does NOT fit a whole run of either scope (see
 # docs/runtime_estimates.md): with every condition in the config, the
 # 5-variable run takes ~13.5 GPU-hours (2 chained jobs) and the 19-variable
@@ -27,15 +27,15 @@
 # where it left off, losing at most one batch. To queue the continuation up
 # front, chain it — it starts when the first job ends, however it ends, and
 # exits quickly if there's nothing left to do:
-#   JOB=$(sbatch --parsable jobs/step3_run_experiment_nibi.sh config/config_nibi_lean.yaml)
-#   sbatch --dependency=afterany:$JOB jobs/step3_run_experiment_nibi.sh config/config_nibi_lean.yaml
+#   JOB=$(sbatch --parsable jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml)
+#   sbatch --dependency=afterany:$JOB jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml
 # Arguments after the config go to run_experiment.py; to discard the
 # checkpoints and start from scratch (e.g. after changing prompts or code):
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_nibi_lean.yaml --full-refresh
+#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml --full-refresh
 #
 # Before the first submission of EITHER scope (and after adding a model or
 # alias to the config), download the models it needs with the same config:
-#   sbatch jobs/prep2_download_models.sh config/config_nibi_lean.yaml
+#   sbatch jobs/prep2_download_models.sh config/config_alliance_lean.yaml
 # This job doesn't pull models itself: it aborts early with a clear message,
 # listing the setup commands, if any model or alias isn't found.
 # =============================================================================
@@ -44,11 +44,11 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64000M
 #SBATCH --time=08:00:00
-#SBATCH --output=%x-%j.out
+#SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
 set -euo pipefail
 
-# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
     || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
@@ -57,21 +57,12 @@ set -- "${JOB_ARGS[@]}"
 
 cd "$DT_REPO"
 
-CONFIG="${1:-config/config_nibi_lean.yaml}"
+CONFIG="${1:-config/config_alliance_lean.yaml}"
 
 echo "== job $SLURM_JOB_ID starting on $(hostname) at $(date) =="
 echo "== account=${SLURM_JOB_ACCOUNT:-$DT_ACCOUNT}  user=$(whoami)  repo=$DT_REPO  config=$CONFIG =="
 
-if [[ "$CONFIG" == *full_variables* ]]; then
-    echo "=============================================================="
-    echo " ALTERNATE SCOPE: 19-variable panel, NOT covered by current"
-    echo " UVic HREB approval. See config/config_nibi_full_variables.yaml"
-    echo " and README.md 'Two configs, two scopes' before trusting these"
-    echo " results for anything beyond code readiness."
-    echo "=============================================================="
-fi
-
-module load $DT_MODULES          # jobs/setup_bash.sh
+module load $DT_MODULES          # environment.modules in your profile
 source "$DT_REPO/.venv/bin/activate"
 
 # --- Ollama on a per-job port, on this node only (127.0.0.1) ---------------

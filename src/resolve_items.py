@@ -1,5 +1,5 @@
 """
-Step 0: resolve the tight variable panel's item labels (config.yaml) to concrete
+Step 0: resolve the tight variable panel's item labels (the config) to concrete
 MIMIC-IV itemids, by querying icu/d_items and hosp/d_labitems locally with DuckDB.
 
 Rationale: hardcoding itemids is fragile across MIMIC-IV point releases and easy
@@ -9,7 +9,7 @@ eyeball and correct if needed, is safer and is the same approach documented in
 the proposal's Appendix A ("variable-panel item identifier mapping").
 
 Usage:
-    python src/resolve_items.py --config-file config/config.yaml
+    python src/resolve_items.py --config-file config/config_local.yaml
 Writes:
     <cache_dir>/item_mapping.json
 """

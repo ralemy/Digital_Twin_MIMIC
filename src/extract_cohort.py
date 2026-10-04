@@ -22,7 +22,7 @@ Outputs (written under <work_dir>):
   panel_long.parquet                long-format (stay_id, variable, hour, value) resampled panel
 
 Usage:
-    python src/extract_cohort.py --config-file config/config.yaml
+    python src/extract_cohort.py --config-file config/config_local.yaml
 Requires resolve_items.py to have been run first (needs cache/item_mapping.json).
 """
 from __future__ import annotations

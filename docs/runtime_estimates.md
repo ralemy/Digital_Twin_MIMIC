@@ -30,7 +30,7 @@ Both steps are negligible compared with the LLM steps.
 
 ### Step 3 — the untuned lean experiment (450 test patients, 15 batches)
 
-Jobs 23143356, 23150580 and 23150606 (config `config_nibi_lean.yaml`):
+Jobs 23143356, 23150580 and 23150606 (config `config_alliance_lean.yaml`):
 
 | Condition | Model | Wall time | Per batch of 32 |
 |---|---|---|---|
@@ -126,23 +126,25 @@ proportion. The extraction log reports the eligible count.
 
 ## 3. Estimates
 
-### Lean scope (5 variables) — already approved
+### Lean scope (5 variables)
 
 | Step | GPU-h | 8-h jobs | Notes |
 |---|---|---|---|
-| Steps 1–2 | done | — | |
-| Untuned experiment | done | — | Results in `results/`; serves as the "before tuning" reference |
+| Steps 1–2 | ~0.1 (CPU) | 1 each | |
+| Untuned experiment (optional) | ~13.5 | 2 | A "before tuning" reference in `results/`; `run_all.sh` skips it |
 | Tuning (`step3b`) | ~5.5 | 1 | Within the 8 h limit |
 | Calibration (`step3c`) | ~9 | 2 | Chain a second job with `afterany` |
 | Final tuned run (`step3`) | ~13.5–15 | 2 | |
 | Evaluation (`step4`) | <0.5 (CPU) | 1 | |
-| **Total remaining** | **~28–30** | **6** | **About 1.5 days** of wall-clock time if the jobs are chained |
+| **Total, without the untuned run** | **~28–30** | **8** | **About 1.5 days** of wall-clock time if the jobs are chained |
 
-### Full scope (19 variables) — not approved by the HREB yet
+### Full scope (19 variables)
 
-[`config_nibi_full_variables.yaml`](../config/config_nibi_full_variables.yaml)
-says it must not be run against real MIMIC-IV data until the HREB amendment is
-approved. The estimates below are for planning only.
+Extrapolated, not measured (see section 2). As for the lean scope, the
+approvals and permissions in the README's "Before you start" section must
+be in place — and must cover the 19-variable panel — before
+[`config_alliance_full.yaml`](../config/config_alliance_full.yaml) is run
+against real MIMIC-IV data.
 
 | Step | GPU-h (range) | 8-h jobs | Notes |
 |---|---|---|---|
@@ -160,7 +162,7 @@ approved. The estimates below are for planning only.
 GBM/LSTM rounds. These are the settings most likely to change with a 19-dimensional
 similarity space and a longer prompt.
 ² Apply `results/tuning/tuned_overrides.yaml` from the lean run on top of
-`config_nibi_full_variables.yaml`. Calibration still has to be redone: the
+`config_alliance_full.yaml`. Calibration still has to be redone: the
 factors are fitted per variable, and `evaluate_results.py` rejects factors
 whose fingerprint (including the variable panel) doesn't match.
 
@@ -179,7 +181,7 @@ conditions (model comparison) are secondary analyses. Running only the three
 RQ conditions plus the baselines for calibration and the final run cuts those
 two steps to about 30% of their cost:
 
-| Scope | Remaining GPU-h, RQ conditions only |
+| Scope | GPU-h, RQ conditions only (tuning + calibration + final run) |
 |---|---|
 | Lean | ~5.5 + 2.8 + 4.2 ≈ **12.5** |
 | Full, reusing lean settings | ~10 + 15 ≈ **25** |
@@ -226,10 +228,10 @@ GBM, LSTM) are unaffected.
      20.9% full pipeline).
    - [src/forecasting_agent.py](../src/forecasting_agent.py)
 3. **The 19-variable configs have a longer request timeout.**
-   `request_timeout_s` is now 600 (was 240) in `config_nibi_full_variables.yaml`.
+   `request_timeout_s` is now 600 (was 240) in `config_alliance_full.yaml`.
 4. **A missing variable gets the naive forecast for that variable only**,
    instead of the whole forecast falling back. This is a methods change. It
-   is described in the README under "Notes → Missing variables" and reported
+   is described in the README under "Notes and known limitations → Missing variables" and reported
    as `llm_filled_rate` per condition and variable. It would have rescued 58
    forecasts in these logs, almost all for lactate.
 5. **`max_tokens` is 2048 (was 1536)** in the three 5-variable configs.
@@ -243,7 +245,7 @@ GBM, LSTM) are unaffected.
    - Its header now gives the correct number of chained 8-hour jobs per scope.
 
 7. **`jobs/run_all.sh` runs every stage end to end** (see the README,
-   "The whole pipeline in one command").
+   section 6).
    - It sizes each job from the estimates in section 3: at most 7 h of work
      per job, time limit = work + 1 h, capped at 8 h.
    - Within a stage, it chains continuation jobs with `afternotok`

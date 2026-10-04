@@ -20,7 +20,7 @@ resampling PATIENTS (not individual observations) with replacement, per
 Section 5.6.
 
 Usage:
-    python src/evaluate_results.py --config-file config/config.yaml
+    python src/evaluate_results.py --config-file config/config_local.yaml
 Requires run_experiment.py to have been run first (reads <results_dir>/*_raw.npz).
 """
 from __future__ import annotations

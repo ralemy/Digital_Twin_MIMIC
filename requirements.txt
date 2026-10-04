@@ -3,7 +3,8 @@
 # wheelhouse builds in .venv.
 #
 # Load these modules first — they are NOT pip-installed on Alliance clusters
-# (jobs/setup_bash.sh does this and builds .venv):
+# (`bash jobs/setup_bash.sh` does this and builds .venv; the modules come from
+# environment.modules in your profile):
 #   module load StdEnv/2023 gcc arrow/25.0.0 python/3.11
 #   virtualenv --no-download .venv && source .venv/bin/activate
 #   pip install --no-index -r requirements.txt

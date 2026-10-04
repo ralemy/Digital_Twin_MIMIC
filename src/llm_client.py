@@ -45,7 +45,7 @@ class LocalLLM:
 
         # How many forecasting/critic calls src/pipeline.py will fire at this
         # LocalLLM concurrently (see performance.llm_max_concurrent_requests
-        # in config.yaml). This doesn't change what a single call does — it
+        # in the config). This doesn't change what a single call does — it
         # just sizes the HTTP connection pool so concurrent calls from a
         # thread pool don't serialize on socket setup. Actual concurrent
         # *generation* on the Ollama side also needs the server started with
@@ -85,7 +85,7 @@ class LocalLLM:
             raise RuntimeError(
                 f"Could not reach the local Ollama server at {self.host}. "
                 "Install Ollama and run `ollama serve` (or check it's already running), "
-                "then `ollama pull <model>` for the model named in config.yaml."
+                "then `ollama pull <model>` for the model named in the config."
             )
 
     def generate(self, prompt: str, system: str | None = None, json_mode: bool = False) -> str:

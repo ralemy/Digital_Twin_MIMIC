@@ -20,7 +20,7 @@ Resuming: forecasts are checkpointed per batch under
 finished condition; --full-refresh starts over.
 
 Usage:
-    python src/calibrate.py --config-file config/config_nibi_lean_tuned.yaml [--grid config/tuning_grid.yaml] [--full-refresh]
+    python src/calibrate.py --config-file config/config_alliance_lean_tuned.yaml [--grid config/tuning_grid.yaml] [--full-refresh]
 Writes:
     <results_dir>/calibration.json
     <results_dir>/calibration_smape.npz   per-patient sMAPE of each condition on

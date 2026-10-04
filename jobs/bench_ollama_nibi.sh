@@ -4,9 +4,9 @@
 # OLLAMA_FLASH_ATTENTION=1 vs the current 4 / off, before using them for the
 # long runs (docs/runtime_estimates.md, section 3).
 #
-#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
+#   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
 #   sbatch jobs/bench_ollama_nibi.sh                       # lean config
-#   sbatch jobs/bench_ollama_nibi.sh config/config_nibi_lean.yaml
+#   sbatch jobs/bench_ollama_nibi.sh config/config_alliance_lean.yaml
 #
 # For each setting it restarts Ollama with it and forecasts the same 64
 # validation patients (the tuning subset; the test split is never read) with
@@ -22,7 +22,7 @@
 # Output: one line per run in <results_dir>/ollama_bench/bench-<job id>.jsonl,
 # a summary table at the end of this job's .out (or later:
 # python src/bench_ollama.py --config-file <config> --summary), and one
-# Ollama log per setting, ollama-<job id>-<setting>.log.
+# Ollama log per setting, $DT_LOG_DIR/ollama-<job id>-<setting>.log.
 #
 # Reading it: "min/450" is the projected time of one LLM condition on the
 # 450 test patients (measured: ~84 min for full_pipeline at np4_fa0);
@@ -41,7 +41,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64000M
 #SBATCH --time=02:00:00
-#SBATCH --output=%x-%j.out
+#SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
 set -uo pipefail     # no -e: one failing setting shouldn't stop the others
 
@@ -51,10 +51,10 @@ load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
 cd "$DT_REPO" || exit 1
-CONFIG="${1:-config/config_nibi_lean.yaml}"
+CONFIG="${1:-config/config_alliance_lean.yaml}"
 echo "== job ${SLURM_JOB_ID:-local} starting on $(hostname) at $(date) — config=$CONFIG =="
 
-module load $DT_MODULES          # jobs/setup_bash.sh
+module load $DT_MODULES          # environment.modules in your profile
 source "$DT_REPO/.venv/bin/activate"
 source jobs/ollama_lib.sh
 

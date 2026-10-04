@@ -23,7 +23,7 @@ setting evaluated in an earlier round is never recomputed. --full-refresh
 deletes the tuning checkpoints and starts over.
 
 Usage:
-    python src/tune.py --config-file config/config_nibi_lean.yaml [--grid config/tuning_grid.yaml] [--full-refresh]
+    python src/tune.py --config-file config/config_alliance_lean.yaml [--grid config/tuning_grid.yaml] [--full-refresh]
 Writes:
     <results_dir>/tuning/trials.csv        every trial's metrics (rewritten after each trial)
     <results_dir>/tuning/rounds.json       each round's incumbent, candidates and winner

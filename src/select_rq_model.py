@@ -19,7 +19,7 @@ The primary's RQ analysis remains the pre-specified one; a chosen model's
 is reported alongside it as a secondary analysis (evaluation.rq_models).
 
 Usage:
-    python src/select_rq_model.py --config-file config/config_nibi_lean_tuned.yaml [--write-config]
+    python src/select_rq_model.py --config-file config/config_alliance_lean_tuned.yaml [--write-config]
 --write-config adds the chosen model to evaluation.rq_models in that config
 and the conditions its RQ analysis needs (full_pipeline_no_critic@<v>,
 full_pipeline_no_similarity@<v>). Then compute them, e.g.

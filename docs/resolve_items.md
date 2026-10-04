@@ -3,7 +3,7 @@
 This page walks through `src/resolve_items.py` from the top down: first what
 the script does as a whole, then `main()`, then every function `main()` calls,
 in the order it calls them. Every example uses real values from
-`config/config_nibi_lean.yaml` and the MIMIC-IV 3.1 files on Nibi, where
+`config/config_alliance_lean.yaml` and the MIMIC-IV 3.1 files on Nibi, where
 
 ```
 $DT_REPO        = where the repo is cloned
@@ -11,8 +11,7 @@ $DT_MIMIC_DIR   = where MIMIC-IV is downloaded (the repo's mimic-iv symlink)
 $DT_RESULTS_DIR = where results are recorded
 ```
 
-(all three set per cluster in `jobs/setup_bash.sh`; on Nibi `$DT_RESULTS_DIR`
-is the repo itself).
+(set from your profile, `~/.config/dt_profile.yml`, by `jobs/setup_bash.sh`).
 
 The MIMIC-IV dictionary tables quoted here (`d_items`, `d_labitems`) describe
 *what can be measured*. They contain no patient data.
@@ -26,7 +25,7 @@ The MIMIC-IV dictionary tables quoted here (`d_items`, `d_labitems`) describe
 measurements out of `chartevents` and `labevents`.
 
 - **Reads**
-  - the config file (default `config/config.yaml`, or whatever you pass with
+  - the config file (default `config/config_alliance_lean.yaml`, or whatever you pass with
     `--config-file`), specifically its `paths`, `performance` and
     `variables` sections;
   - `<mimic_root>/icu/d_items.csv.gz`, the dictionary of ICU chart items;
@@ -56,7 +55,7 @@ It does not read any patient data and finishes in a few seconds.
 
 ### Example input
 
-Three variables from `config/config_nibi_lean.yaml`:
+Three variables from `config/config_alliance_lean.yaml`:
 
 ```yaml
 variables:
@@ -165,19 +164,19 @@ path.
 
 1. It builds a one-line description from the first line of the module
    docstring: `"Step 0: resolve the tight variable panel's item labels
-   (config.yaml) to concrete"`. The docstring still calls this "Step 0"; the
+   (the config) to concrete"`. The docstring still calls this "Step 0"; the
    job scripts call it step 1.
 2. It calls `parse_step_args()` [see below], which returns the parsed
    arguments.
 3. It calls `main(args.config_file)`.
 
 ```
-$ python src/resolve_items.py --config-file config/config_nibi_lean.yaml
-  → args.config_file = "config/config_nibi_lean.yaml"
-  → main("config/config_nibi_lean.yaml")
+$ python src/resolve_items.py --config-file config/config_alliance_lean.yaml
+  → args.config_file = "config/config_alliance_lean.yaml"
+  → main("config/config_alliance_lean.yaml")
 
 $ python src/resolve_items.py
-  → args.config_file = "config/config.yaml"      (the default)
+  → args.config_file = "config/config_alliance_lean.yaml"      (the default)
 ```
 
 At import time the module also creates its logger with
@@ -191,7 +190,7 @@ tagged `[resolve_items]`.
 **What it does:** runs the whole workflow: load config, check folders, find
 the two dictionary files, resolve every variable, write the JSON.
 
-`config_path` arrives as `"config/config_nibi_lean.yaml"`.
+`config_path` arrives as `"config/config_alliance_lean.yaml"`.
 
 1. **Load the config.** `cfg = load_config(config_path)` [see below]. `cfg`
    is a plain dict; the parts this script uses look like:
@@ -292,7 +291,7 @@ the two dictionary files, resolve every variable, write the JSON.
 checks that the config file exists.
 
 - One option, `--config-file` (with `--config` accepted as an alias), stored
-  as `args.config_file`, default `"config/config.yaml"`. Relative paths are
+  as `args.config_file`, default `"config/config_alliance_lean.yaml"`. Relative paths are
   resolved against the current directory, so run from the repo root (the job
   scripts `cd` there).
 - If the file doesn't exist, it exits with status 2 and a usage message
@@ -304,7 +303,7 @@ usage: resolve_items.py [-h] [--config-file CONFIG_FILE]
 resolve_items.py: error: config file not found: nope.yaml
 ```
 
-Returns: `Namespace(config_file='config/config_nibi_lean.yaml')`.
+Returns: `Namespace(config_file='config/config_alliance_lean.yaml')`.
 
 ---
 
@@ -330,7 +329,7 @@ usable.
 
 1. Parses the YAML file with `yaml.safe_load`.
 2. For **every** entry under `paths`, expands environment variables first
-   (`$DT_RESULTS_DIR`, set by `jobs/setup_bash.sh`) and then `~`; a path
+   (`$DT_RESULTS_DIR`, set from your profile by `jobs/setup_bash.sh`) and then `~`; a path
    that is still relative is taken relative to the repository base, not the
    current directory:
 
@@ -340,8 +339,8 @@ usable.
    ```
 
    A variable that isn't set (the shell never sourced `jobs/setup_bash.sh`)
-   stops it right away: `ValueError: paths.work_dir in config/config_nibi_lean.yaml
-   uses an unset variable ... — run `source jobs/setup_bash.sh` first`.
+   stops it right away: `ValueError: paths.work_dir in config/config_alliance_lean.yaml
+   uses an unset variable ... — run the setup (README, section 1), then `source ~/.bashrc``.
 3. If the config has no `performance` section (older configs), it fills in
    defaults: all CPU cores for DuckDB, an 8 GB DuckDB memory limit, one
    concurrent LLM request, and no batched baseline prediction.

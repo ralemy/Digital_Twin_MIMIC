@@ -10,6 +10,10 @@ __pycache__/
 /mimic-iv-twin-work
 /mimic-iv-twin-work-full
 /ollama-models
+
+# jobs/setup_bash.sh's log and lock
+/setup.lock
+/setup-failed-*.log
 # Personal job profiles hold credentials — keep them in ~/.config, never in the repo
 *profile*.yml
 !config/profile.sample.yml
@@ -17,6 +21,12 @@ __pycache__/
 # jobs/run_all.sh state and logs
 run_all/
 
+# Job output: Slurm .out files and Ollama logs (the directory itself is kept)
+/logs/*
+!/logs/.gitkeep
+
 # Personal Claude Code settings (conversation-history hook)
 .claude/settings.local.json
+# The hook's output now lives in ~/thesis_methodology; never commit a copy here
+conversation_history.md
 

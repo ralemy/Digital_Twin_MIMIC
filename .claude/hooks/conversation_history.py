@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Rebuild docs/conversation_history.md from every Claude Code transcript of
-this project: a settings section, then each prompt followed by Claude's
+Rebuild ~/thesis_methodology/conversation_history.md (outside the repo; the
+repo's .gitignore also lists the old docs/ location) from every Claude Code
+transcript of this project: a settings section, then each prompt followed by Claude's
 final answer to it, oldest first.
 
 Run by a Stop hook (.claude/settings.local.json) after every answer, so the
@@ -25,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path(__file__).resolve().parents[2])
-OUT = PROJECT / "docs" / "conversation_history.md"
+OUT = Path.home() / "thesis_methodology" / "conversation_history.md"
 DEFAULT_TRANSCRIPTS = Path.home() / ".claude" / "projects" / ("-" + str(PROJECT).strip("/").replace("/", "-").replace("_", "-"))
 
 # Context the IDE or harness adds to a prompt; not what the user typed.

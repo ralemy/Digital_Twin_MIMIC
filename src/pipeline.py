@@ -1,5 +1,5 @@
 """
-Orchestration — runs every condition in config.yaml's `conditions` list over
+Orchestration — runs every condition in the config's `conditions` list over
 the test split and returns stacked (n_patients, horizon_hours, n_variables)
 arrays ready for src/metrics.py. This is the "local, script-based sequential
 pipeline" described in Chapter 5, Section 5.5, step 2 — a single Python
@@ -217,7 +217,7 @@ def _predict_batch(
             # Each Ollama HTTP call releases the GIL while waiting on I/O, so a
             # thread pool (not multiprocessing) is enough to get concurrent
             # requests in flight — see performance.llm_max_concurrent_requests
-            # in config.yaml and the matching OLLAMA_NUM_PARALLEL note in the
+            # in the config and the matching OLLAMA_NUM_PARALLEL note in the
             # README. Results are collected via map(), which preserves order,
             # so y_pred[pi] still lines up with batch_ids[pi].
             for pi, (fcast, interval, _) in enumerate(ex.map(_single_model_worker, batch_ids)):

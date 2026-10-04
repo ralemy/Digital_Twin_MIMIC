@@ -1,26 +1,72 @@
 # =============================================================================
-# Personal profile for the jobs in jobs/ — a SAMPLE. It holds only your
-# PhysioNet credentials, which only jobs/prep1_download_mimic_nibi.sh uses.
-# Paths (repo, MIMIC-IV, Ollama models, modules) are NOT set here: they come
-# from jobs/setup_bash.sh, per cluster.
+# YOUR PROFILE — a TEMPLATE. Copy it once per cluster (Alliance clusters don't
+# share home directories), fill it in, and keep it private:
 #
-# Set up once (only if you will download MIMIC-IV with prep1):
 #   cp config/profile.sample.yml ~/.config/dt_profile.yml
-#   chmod 600 ~/.config/dt_profile.yml      # it holds your PhysioNet password
-#   # then edit ~/.config/dt_profile.yml
+#   chmod 600 ~/.config/dt_profile.yml      # required: it holds your PhysioNet password
+#   nano ~/.config/dt_profile.yml           # or any editor
+#   bash jobs/setup_bash.sh                 # symlinks, Ollama, .venv, ~/.bashrc (README, section 2)
+#   source ~/.bashrc
 #
-# Jobs read ~/.config/dt_profile.yml by default; to use another file, pass
-# --profile <file> among the job's arguments:
-#   sbatch jobs/prep1_download_mimic_nibi.sh --profile ~/.config/other.yml
+# This is the only file you edit to set the project up: jobs/setup_bash.sh
+# reads it, sets every location (DT_MIMIC_DIR, DT_RESULTS_DIR, ...) and the
+# Slurm account, creates the repo's mimic-iv and ollama-models symlinks,
+# installs Ollama and writes the final values into ~/.bashrc. Nothing in
+# jobs/, config/ or src/ needs changing. After changing this file, redo the
+# setup: rm setup.lock && bash jobs/setup_bash.sh && source ~/.bashrc
+#
+# Paths must be absolute; ~ and environment variables ($HOME, $SCRATCH, $USER,
+# and $DT_REPO — where this repo is cloned) are expanded when it is read.
 #
 # Keep your copy private: never commit it, never put it in the repo or in
-# /project (shared with the group). Jobs refuse a profile that holds a
-# password but is readable by anyone else (fix with chmod 600).
+# /project (shared with the group). Every job refuses a profile that others
+# can read (fix with chmod 600). Jobs read ~/.config/dt_profile.yml; to use
+# another file, pass --profile <file> among a job's arguments (or set
+# DT_PROFILE=<file> before sourcing jobs/setup_bash.sh).
 # =============================================================================
 
-# Your PhysioNet account must be credentialed for MIMIC-IV. The password
-# never leaves this file except into a private, temporary wgetrc inside the
-# download job.
+slurm:
+  # Your allocation's account, e.g. def-yourpi. `sshare -U -u $USER` lists
+  # yours; use the def-... one (GPU jobs are charged to its _gpu counterpart
+  # automatically). Exported as SBATCH_ACCOUNT, so sbatch/salloc use it.
+  account: ""
+
+paths:
+  # Where the MIMIC-IV files (hosp/, icu/) are downloaded — ~10 GB. Project
+  # space is backed up and not purged; only credentialed people may be able to
+  # read it (README, "Before you start", item 3). The repo's mimic-iv symlink
+  # points here. Example: ~/projects/def-yourpi/mimic-iv/3.1
+  mimic_dir: ""
+
+  # Where results are recorded: <results_dir>/mimic-iv-twin-work (lean) and
+  # <results_dir>/mimic-iv-twin-work-full (full). Same access rules as the
+  # data. Example: ~/projects/def-yourpi/dt-results
+  results_dir: ""
+
+  # Where the Ollama models are downloaded — ~190 GB for all six. Scratch has
+  # room but is purged after a period of inactivity (re-run prep2 if models
+  # go missing). The repo's ollama-models symlink points here.
+  # Example: $SCRATCH/ollama-local/models
+  ollama_models: ""
+
+  # Where Ollama is installed (no root needed; ~2 GB): the setup unpacks it
+  # into the parent of this directory, which must end in /bin.
+  ollama_bin: ~/ollama-local/bin
+
+environment:
+  # Modules every job loads before activating .venv. Leave empty for the
+  # default on Alliance clusters, "StdEnv/2023 python/3.11". Adding
+  # "gcc arrow/25.0.0" gives pandas pyarrow — not between runs of one
+  # experiment: string columns then read as `str`, not `object`.
+  modules: ""
+
+  # The Ollama release the setup installs. Leave empty for 0.34.4, the
+  # version this project was run with.
+  ollama_version: ""
+
 physionet:
+  # Your PhysioNet account, credentialed for MIMIC-IV — used only by
+  # jobs/prep1_download_mimic_nibi.sh. The password never leaves this file
+  # except into a private, temporary wgetrc inside the download job.
   username: ""
   password: ""

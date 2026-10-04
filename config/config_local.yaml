@@ -4,15 +4,16 @@
 # panel, short horizon, fully local execution, no cloud / no external API.
 #
 # This file is sized for the original reference machine (11GB GTX 1080 Ti,
-# 32GB RAM) and is also the version already described to UVic's HREB
-# (dev-sized 300-patient cohort, sequential single-request LLM calls). On an
-# Alliance cluster, use config/config_nibi_lean.yaml instead — same design,
+# 32GB RAM): dev-sized 300-patient cohort, sequential single-request LLM
+# calls. The same approvals and permissions apply as on the clusters (see
+# README.md, "Before you start: approvals and permissions"). On an
+# Alliance cluster, use config/config_alliance_lean.yaml instead — same design,
 # same variable panel, sized for an H100 job.
 # =============================================================================
 
 paths:
   # mimic-iv is the repo's link to $DT_MIMIC_DIR; $DT_RESULTS_DIR is where results
-  # are recorded. Both are set in jobs/setup_bash.sh (source it first).
+  # are recorded. Both come from your profile, via jobs/setup_bash.sh (source it first).
   mimic_root: "mimic-iv"            # expects mimic-iv/hosp and mimic-iv/icu (raw PhysioNet export, .csv.gz)
   work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work"    # all derived/intermediate/output files go here (create if missing)
   cache_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work/cache"

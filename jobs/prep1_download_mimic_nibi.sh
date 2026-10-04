@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Slurm batch job — download MIMIC-IV (hosp/ and icu/ modules) from PhysioNet
-# into $DT_MIMIC_DIR (jobs/setup_bash.sh), so the result is
+# into $DT_MIMIC_DIR (paths.mimic_dir in your profile), so the result is
 #   $DT_MIMIC_DIR/hosp/*.csv.gz
 #   $DT_MIMIC_DIR/icu/*.csv.gz
 # which the repo's mimic-iv link (the configs' mimic_root) points to.
@@ -22,9 +22,9 @@
 # All Nibi nodes have internet access (Alliance docs, Nibi > Site specifics),
 # so this runs fine as a regular job. Single-core and network bound.
 #
-# The destination comes from jobs/setup_bash.sh; the PhysioNet username and
-# password from your profile, ~/.config/dt_profile.yml (see
-# config/profile.sample.yml and README, 'Your profile'). To use another
+# The destination (paths.mimic_dir) and the PhysioNet username and password
+# (physionet:) come from your profile, ~/.config/dt_profile.yml (see
+# config/profile.sample.yml and README, section 1). To use another
 # profile, add --profile <file> anywhere in the job's arguments.
 # The credentials stay in your private profile (chmod 600 — the job refuses
 # it otherwise) and are never exported to child processes.
@@ -33,26 +33,26 @@
 # command line / in `ps` output.
 #
 # Submit from the repository base:
-#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
+#   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
 #   sbatch jobs/prep1_download_mimic_nibi.sh [mimic-iv version, default 3.1]
 # =============================================================================
 #SBATCH --job-name=mimic-twin-download
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1000M
 #SBATCH --time=06:00:00
-#SBATCH --output=%x-%j.out
+#SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
 set -euo pipefail
 
-# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
     || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-: "${PHYSIONET_USERNAME:?physionet.username is empty in ${PROFILE_FILE:-~/.config/dt_profile.yml (not found)} — fill it in (see config/profile.sample.yml)}"
-: "${PHYSIONET_PASSWORD:?physionet.password is empty in ${PROFILE_FILE:-~/.config/dt_profile.yml (not found)} — fill it in (see config/profile.sample.yml)}"
+: "${PHYSIONET_USERNAME:?physionet.username is empty in $PROFILE_FILE — fill it in (see config/profile.sample.yml)}"
+: "${PHYSIONET_PASSWORD:?physionet.password is empty in $PROFILE_FILE — fill it in (see config/profile.sample.yml)}"
 
 VERSION="${1:-3.1}"
 BASE_URL="https://physionet.org/files/mimiciv/$VERSION/"

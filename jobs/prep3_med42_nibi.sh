@@ -3,15 +3,15 @@
 # Slurm batch job — one-off check that Med42-70B loads and answers on a GPU
 # node via Ollama, before wiring it into the experiment config.
 #
-# Paths (repo, MIMIC-IV, Ollama models, modules) come from
-# jobs/setup_bash.sh, picked by cluster.
+# Locations, account and modules come from your profile
+# (~/.config/dt_profile.yml), read by jobs/setup_bash.sh.
 #
 # Download the model and create its med42:70b alias first: enable the
 # llama_Med42_70b conditions in the config, then
-#   sbatch jobs/prep2_download_models.sh config/config_nibi_lean.yaml
+#   sbatch jobs/prep2_download_models.sh config/config_alliance_lean.yaml
 #
 # Then, from the repository base:
-#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
+#   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
 #   sbatch jobs/prep3_med42_nibi.sh                # tests med42:70b
 #   sbatch jobs/prep3_med42_nibi.sh <model-name>   # tests another pulled model
 # =============================================================================
@@ -20,18 +20,18 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64000M
 #SBATCH --time=00:30:00
-#SBATCH --output=%x-%j.out
+#SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
 set -euo pipefail
 
-# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
     || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-command -v ollama > /dev/null || { echo "== ollama not found in $DT_OLLAMA_BIN (DT_OLLAMA_BIN, jobs/setup_bash.sh) — install it per installing_ollama.md ==" >&2; exit 1; }
+command -v ollama > /dev/null || { echo "== ollama not found in $DT_OLLAMA_BIN (paths.ollama_bin in your profile) — the setup installs it (README, section 2) ==" >&2; exit 1; }
 
 MODEL="${1:-med42:70b}"
 OLLAMA_PORT=11434
@@ -42,7 +42,8 @@ echo "== model=$MODEL  OLLAMA_MODELS=$OLLAMA_MODELS =="
 nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv
 
 # --- start Ollama in the background, on this node only (127.0.0.1) --------
-ollama serve > "ollama-${SLURM_JOB_ID}.log" 2>&1 &
+mkdir -p "$DT_LOG_DIR"
+ollama serve > "$DT_LOG_DIR/ollama-${SLURM_JOB_ID}.log" 2>&1 &
 OLLAMA_PID=$!
 
 cleanup() {
@@ -56,7 +57,7 @@ trap cleanup EXIT
 echo "== waiting for ollama on 127.0.0.1:${OLLAMA_PORT} =="
 if ! curl -sf --retry 60 --retry-delay 1 --retry-connrefused \
         "http://127.0.0.1:${OLLAMA_PORT}/api/tags" > /dev/null; then
-    echo "== ollama did not become ready — see ollama-${SLURM_JOB_ID}.log. Aborting. ==" >&2
+    echo "== ollama did not become ready — see $DT_LOG_DIR/ollama-${SLURM_JOB_ID}.log. Aborting. ==" >&2
     exit 1
 fi
 echo "== ollama ready =="

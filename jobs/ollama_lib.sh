@@ -4,7 +4,7 @@
 #
 #   source "$DT_REPO/jobs/ollama_lib.sh"
 #   start_ollama "$CONFIG" [tag]      # per-job port, stopped when the job exits;
-#                                     # log: ollama-<job id>[-<tag>].log
+#                                     # log: $DT_LOG_DIR/ollama-<job id>[-<tag>].log
 #   stop_ollama                       # stop it early (e.g. to restart with other settings)
 #   require_models "$CONFIG" all      # every model the config's conditions use
 #   require_models "$CONFIG" default  # only llm.model (e.g. for tuning)
@@ -19,13 +19,13 @@
 #   OLLAMA_FLASH_ATTENTION  = performance.ollama_flash_attention (default off)
 # so the request slots always match the requests the pipeline sends at once.
 # A benchmark can override both: start_ollama "$CONFIG" <tag> <parallel> <0|1>.
-# Needs the venv's python (PyYAML) and OLLAMA_MODELS (jobs/setup_bash.sh).
+# Needs the venv's python (PyYAML) and OLLAMA_MODELS (paths.ollama_models in your profile).
 # =============================================================================
 
 start_ollama() {
     local config=${1:?start_ollama needs the config file} tag=${2:-} settings np fa
     local port=$((20000 + ${SLURM_JOB_ID:-$$} % 10000))
-    local log_file="ollama-${SLURM_JOB_ID:-local}${tag:+-$tag}.log"
+    local log_file="$DT_LOG_DIR/ollama-${SLURM_JOB_ID:-local}${tag:+-$tag}.log"
     settings=$(python -c 'import sys; sys.path.insert(0, "src")
 from common import load_config, ollama_server_settings
 s = ollama_server_settings(load_config(sys.argv[1]))
@@ -36,7 +36,7 @@ print(s["OLLAMA_NUM_PARALLEL"], s["OLLAMA_FLASH_ATTENTION"])' "$config") || retu
          "(${3:+overridden; }config: $np / $fa from $config) =="
     export OLLAMA_HOST="127.0.0.1:${port}"
     export DT_OLLAMA_HOST="http://127.0.0.1:${port}"
-    mkdir -p "$OLLAMA_MODELS"
+    mkdir -p "$OLLAMA_MODELS" "$DT_LOG_DIR"
     ollama serve > "$log_file" 2>&1 &
     OLLAMA_PID=$!
     trap stop_ollama EXIT

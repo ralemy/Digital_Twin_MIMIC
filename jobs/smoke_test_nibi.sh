@@ -8,20 +8,20 @@
 # generous headroom, not an estimate of what it needs.
 #
 #
-# Paths (repo, MIMIC-IV, Ollama models, modules) come from
-# jobs/setup_bash.sh, picked by cluster. Submit from the repository base:
-#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
+# Locations, account and modules come from your profile
+# (~/.config/dt_profile.yml), read by jobs/setup_bash.sh. Submit from the repository base:
+#   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
 #   sbatch jobs/smoke_test_nibi.sh
 # =============================================================================
 #SBATCH --job-name=mimic-twin-smoke
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8000M
 #SBATCH --time=00:15:00
-#SBATCH --output=%x-%j.out
+#SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
 set -euo pipefail
 
-# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
     || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
@@ -33,9 +33,9 @@ cd "$DT_REPO"
 echo "== job $SLURM_JOB_ID starting on $(hostname) at $(date) =="
 echo "== account=${SLURM_JOB_ACCOUNT:-$DT_ACCOUNT}  user=$(whoami)  repo=$DT_REPO =="
 
-module load $DT_MODULES          # jobs/setup_bash.sh
+module load $DT_MODULES          # environment.modules in your profile
 source "$DT_REPO/.venv/bin/activate"
 
-python src/smoke_test.py --config-file config/config_nibi_lean.yaml
+python src/smoke_test.py --config-file config/config_alliance_lean.yaml
 
 echo "== job $SLURM_JOB_ID finished at $(date) =="

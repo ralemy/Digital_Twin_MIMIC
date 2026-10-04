@@ -175,7 +175,7 @@ class LSTMBaseline:
             raise ImportError(
                 "LSTMBaseline requires PyTorch. Install it with `pip install torch` "
                 "(a CUDA build matching your GPU), or set baselines.run_lstm: false "
-                "and drop 'lstm' from `conditions` in config.yaml to skip this baseline."
+                "and drop 'lstm' from `conditions` in the config to skip this baseline."
             )
         self.variables = variables
         self.horizon_hours = horizon_hours
@@ -263,7 +263,7 @@ class LSTMBaseline:
     def predict_batch(self, obs_stack: np.ndarray, batch_size: int = 512) -> dict:
         """Same math as predict(), but for many patients in one (or a few)
         GPU forward passes instead of one Python call per patient. Enabled
-        by performance.batch_predict_baselines in config.yaml — on a single
+        by performance.batch_predict_baselines in the config — on a single
         consumer GPU (e.g. the 1080 Ti this project was first written
         against) the per-patient loop is already close to GPU-bound, so
         batching barely matters; on a 40GB card the per-call overhead
