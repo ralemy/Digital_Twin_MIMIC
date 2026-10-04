@@ -12,6 +12,10 @@ job's node, which covers the Ollama server's GPU use.
 Never breaks a run: if wandb is missing, disabled, not logged in, or the
 service is unreachable, every call here is a no-op (one warning).
 
+Off unless both the config enables it and the profile allows it: the
+profile's environment.disable_wandb (default true) is exported by
+jobs/setup_bash.sh as DT_WANDB_DISABLED=1 and wins over the config.
+
 Config:
     logging:
       wandb:
@@ -50,6 +54,9 @@ def start(cfg: dict, stage: str, config_path: str, extra: dict | None = None) ->
     global _run
     wcfg = ((cfg.get("logging") or {}).get("wandb") or {})
     if not wcfg.get("enabled"):
+        return
+    if os.environ.get("DT_WANDB_DISABLED", "1") == "1":
+        log.info("Weights & Biases disabled by the profile (environment.disable_wandb).")
         return
     os.environ["WANDB_CONSOLE"] = "off"            # never upload stdout/stderr
     os.environ.setdefault("WANDB_SILENT", "true")

@@ -23,6 +23,8 @@ Rorqual, ...) and between users:
 | the ollama binary's directory | `paths.ollama_bin` | `DT_OLLAMA_BIN` (first on `PATH`) | |
 | the Slurm account | `slurm.account` | `DT_ACCOUNT` (also `SBATCH_ACCOUNT`, `SALLOC_ACCOUNT`) | |
 | modules to load | `environment.modules` | `DT_MODULES` | |
+| keep Weights & Biases off (default `true`) | `environment.disable_wandb` | `DT_WANDB_DISABLED` (also `WANDB_MODE=disabled`) | |
+| compute nodes reach the internet (default `true`) | `environment.workers_have_internet` | `DT_WORKER_INTERNET` | |
 | PhysioNet login (download job only) | `physionet.username`, `.password` | not exported | |
 
 - **Your profile, `~/.config/dt_profile.yml`** (template:
@@ -82,7 +84,7 @@ The setup writes it into `~/.bashrc`, so every login shell has it after
 
 ## `jobs/setup_bash.sh`, step by step
 
-### 1. Where things are (lines 57–67)
+### 1. Where things are (lines 67–77)
 
 - `DT_REPO` is the directory above `jobs/`.
 - `DT_CLUSTER` is `$CC_CLUSTER` (set by the Alliance environment), or
@@ -93,7 +95,7 @@ The setup writes it into `~/.bashrc`, so every login shell has it after
   clusters), else the first `python3` on `PATH`. It must work before any
   module or `.venv` is loaded.
 
-### 2. Read the profile (`dt_read_profile`, lines 97–170)
+### 2. Read the profile (`dt_read_profile`, lines 107–193)
 
 1. **It must exist** — otherwise it prints the `cp` and `chmod` commands
    that create it from the template.
@@ -110,6 +112,11 @@ The setup writes it into `~/.bashrc`, so every login shell has it after
      that isn't set is an error.
    - On a cluster, `slurm.account` is required, and `environment.modules`
      defaults to `StdEnv/2023 python/3.11`.
+   - `environment.disable_wandb` and `environment.workers_have_internet`
+     must be true or false (default true); they become `1` or `0`. With
+     `DT_WANDB_DISABLED=1`, `src/tracking.py` never starts Weights & Biases;
+     with `DT_WORKER_INTERNET=0`, the download jobs refuse to run as Slurm
+     jobs and `run_all.sh` runs its `models` stage on the login node.
    - Every problem is listed at once (`paths.mimic_dir is empty`, ...).
 4. It prints one `NAME=value` line per variable, each value passed through
    `shlex.quote`, and `eval` turns them into shell variables. The quoting
@@ -118,7 +125,7 @@ The setup writes it into `~/.bashrc`, so every login shell has it after
 If anything fails, a sourced `setup_bash.sh` returns 1 (an executed one
 exits 1), so a job stops right there.
 
-### 3. Export (lines 179–192)
+### 3. Export (lines 202–222)
 
 `OLLAMA_MODELS` (what Ollama reads) is set to `DT_OLLAMA_MODELS`;
 `DT_OLLAMA_BIN` is put first on `PATH` (once); `SBATCH_ACCOUNT` and
@@ -128,7 +135,7 @@ old `export OLLAMA_MODELS=...` in `~/.bashrc` is overwritten.
 
 ### 4. One-time setup (only with `bash jobs/setup_bash.sh`)
 
-- **Lock and log (lines 70–93, before the profile is read):** creates
+- **Lock and log (lines 80–103, before the profile is read):** creates
   `setup.lock` in the repo base atomically (`noclobber`) — or refuses to run
   if it exists — and copies everything printed into it (`exec > >(tee ...)`).
   An `EXIT` trap renames it to `setup-failed-<time>.log` if the run fails,

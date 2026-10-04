@@ -19,8 +19,12 @@
 # Files that pass are left alone. Re-submitting this job after a timeout or
 # failure simply continues where it left off.
 #
-# All Nibi nodes have internet access (Alliance docs, Nibi > Site specifics),
-# so this runs fine as a regular job. Single-core and network bound.
+# Single-core and network bound. Where worker nodes have internet access
+# (environment.workers_have_internet: true, the default — e.g. Nibi), submit it
+# with sbatch. Where they don't (false — e.g. Rorqual), run it on a login node
+# instead, inside tmux since it takes hours:
+#   cd "$DT_REPO" && bash jobs/prep1_download_mimic_nibi.sh [version]
+# As a Slurm job on such a cluster it stops at once with that advice.
 #
 # The destination (paths.mimic_dir) and the PhysioNet username and password
 # (physionet:) come from your profile, ~/.config/dt_profile.yml (see
@@ -51,6 +55,14 @@ source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
+# Downloading needs the internet. On clusters whose worker nodes have none
+# (environment.workers_have_internet: false in your profile), run this on a
+# login node with bash instead of sbatch; jobs/run_all.sh does that itself.
+if [ -n "${SLURM_JOB_ID:-}" ] && [ "$DT_WORKER_INTERNET" != 1 ]; then
+    echo "== this cluster's worker nodes have no internet access (environment.workers_have_internet: false in your profile) — run it on a login node instead, e.g. inside tmux: cd \$DT_REPO && bash jobs/prep1_download_mimic_nibi.sh $* ==" >&2
+    exit 1
+fi
+
 : "${PHYSIONET_USERNAME:?physionet.username is empty in $PROFILE_FILE — fill it in (see config/profile.sample.yml)}"
 : "${PHYSIONET_PASSWORD:?physionet.password is empty in $PROFILE_FILE — fill it in (see config/profile.sample.yml)}"
 
@@ -58,10 +70,11 @@ VERSION="${1:-3.1}"
 BASE_URL="https://physionet.org/files/mimiciv/$VERSION/"
 DEST="$DT_MIMIC_DIR"
 
-echo "== job $SLURM_JOB_ID starting on $(hostname) at $(date) =="
+echo "== job ${SLURM_JOB_ID:-(login node)} starting on $(hostname) at $(date) =="
 echo "== account=${SLURM_JOB_ACCOUNT:-$DT_ACCOUNT}  user=$(whoami)  dest=$DEST  mimic-iv=$VERSION =="
 
 mkdir -p "$DEST"
+source "$DT_REPO/jobs/progress_lib.sh"
 cd "$DEST"
 
 # Credentials -> private wgetrc. wgetrc takes the rest of the line as the
@@ -99,8 +112,11 @@ list_missing() {
 }
 
 # -4 : IPv4 only (the cluster's default wget alias does the same)
-# -nv: one line per file instead of a progress bar in the log
+# -nv: one line per file, for the small top-level files
 WGET=(wget -4 -nv --tries=5 --waitretry=30)
+# The data files (up to several GB each) show their progress: a live bar in a
+# terminal, a line per 10% or per minute in a log (jobs/progress_lib.sh).
+WGET_PROGRESS=(wget -4 --tries=5 --waitretry=30 --progress=bar:force:noscroll)
 
 # Refresh the checksum list and top-level files. -N only re-downloads them
 # if PhysioNet's copy is newer. If this fails but a local SHA256SUMS.txt
@@ -123,7 +139,7 @@ for path in "${TO_FETCH[@]}"; do
     # Download next to the target and rename only when complete, so an
     # interrupted transfer never leaves a partial file under the real name.
     rm -f "$path.part"
-    if "${WGET[@]}" -O "$path.part" "$BASE_URL$path"; then
+    if "${WGET_PROGRESS[@]}" -O "$path.part" "$BASE_URL$path" 2>&1 | dt_progress "$path"; then
         mv -f "$path.part" "$path"
     else
         echo "download failed for $path (wget exit $?)" >&2
@@ -142,4 +158,4 @@ if (( bad + missing )); then
     echo "== $missing file(s) missing after download ($bad of them failed the checksum and were deleted) — re-submit this job to retry ==" >&2
     exit 1
 fi
-echo "== all $expected hosp/icu files verified; job $SLURM_JOB_ID finished at $(date) =="
+echo "== all $expected hosp/icu files verified; job ${SLURM_JOB_ID:-(login node)} finished at $(date) =="

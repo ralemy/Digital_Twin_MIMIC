@@ -30,9 +30,13 @@
 # Apache 2.0 for Qwen2.5 and Baichuan-M2). jobs/run_all.sh runs this job as
 # its first stage.
 #
-# All Nibi nodes have internet access (Alliance docs, Nibi > Site specifics),
-# so this runs as a regular CPU-only job — no GPU needed to download.
-# Single-core and network bound.
+# CPU-only, single-core and network bound — no GPU needed to download. Where
+# worker nodes have internet access (environment.workers_have_internet: true,
+# the default — e.g. Nibi), submit it with sbatch. Where they don't (false —
+# e.g. Rorqual), run it on a login node instead, inside tmux:
+#   cd "$DT_REPO" && bash jobs/prep2_download_models.sh <config>
+# As a Slurm job on such a cluster it stops at once with that advice;
+# jobs/run_all.sh's models stage runs it on the login node by itself.
 #
 # Locations, account and modules come from your profile
 # (~/.config/dt_profile.yml), read by jobs/setup_bash.sh.
@@ -59,6 +63,14 @@ source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
+# Downloading needs the internet. On clusters whose worker nodes have none
+# (environment.workers_have_internet: false in your profile), run this on a
+# login node with bash instead of sbatch; jobs/run_all.sh does that itself.
+if [ -n "${SLURM_JOB_ID:-}" ] && [ "$DT_WORKER_INTERNET" != 1 ]; then
+    echo "== this cluster's worker nodes have no internet access (environment.workers_have_internet: false in your profile) — run it on a login node instead, e.g. inside tmux: cd \$DT_REPO && bash jobs/prep2_download_models.sh $* ==" >&2
+    exit 1
+fi
+
 command -v ollama > /dev/null || { echo "== ollama not found in $DT_OLLAMA_BIN (paths.ollama_bin in your profile) — the setup installs it (README, section 2) ==" >&2; exit 1; }
 cd "$DT_REPO"
 
@@ -77,6 +89,7 @@ echo "== account=${SLURM_JOB_ACCOUNT:-$DT_ACCOUNT}  user=$(whoami)  config=$CONF
 
 module load $DT_MODULES          # environment.modules in your profile
 source "$DT_REPO/.venv/bin/activate"
+source jobs/progress_lib.sh
 
 # One "model<TAB>alias" line per model the config's run needs (alias empty
 # if none is set).
@@ -138,11 +151,10 @@ while IFS=$'\t' read -r MODEL ALIAS; do
 
     if [ -z "$MODEL_ID" ]; then
         echo "   not present — pulling (started $(date +%T))"
-        # The progress bar is terminal cursor codes, unreadable in a log file:
-        # strip the codes and progress lines, keep the last few status lines.
-        # Success is judged by model_id below, not by this pipeline's status.
-        ollama pull "$MODEL" 2>&1 | tr '\r' '\n' | sed -E 's/\x1b\[[0-9;?]*[a-zA-Z]//g' \
-            | grep -v -E '^\s*$|[0-9]+%' | uniq | tail -5 || true
+        # Progress: a live bar in a terminal; in a log, a line per 10% or per
+        # minute (jobs/progress_lib.sh). Success is judged by model_id below,
+        # not by this pipeline's status.
+        ollama pull "$MODEL" 2>&1 | dt_progress "$MODEL" || true
         MODEL_ID=$(model_id "$MODEL")
         if [ -z "$MODEL_ID" ]; then
             echo "   PULL FAILED for '$MODEL' — see above and $OLLAMA_LOG" >&2

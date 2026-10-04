@@ -64,6 +64,18 @@ environment:
   # version this project was run with.
   ollama_version: ""
 
+  # Weights & Biases sends aggregate metrics (no patient-level data) to an
+  # external service. true (the default) keeps it off whatever the configs
+  # say; set false only if your ethics approval and data governance allow it.
+  disable_wandb: true
+
+  # Whether this cluster's compute (worker) nodes can reach the internet:
+  # true on Nibi, false on Rorqual (see the cluster's Alliance wiki page).
+  # With false, the downloads (MIMIC-IV with prep1, the Ollama models with
+  # prep2) run on a login node instead of as Slurm jobs — jobs/run_all.sh does
+  # that by itself; run prep1/prep2 by hand with bash (README, section 4).
+  workers_have_internet: true
+
 physionet:
   # Your PhysioNet account, credentialed for MIMIC-IV — used only by
   # jobs/prep1_download_mimic_nibi.sh. The password never leaves this file

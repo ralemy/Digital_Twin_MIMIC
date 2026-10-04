@@ -44,6 +44,13 @@
 #   DT_ACCOUNT        [slurm.account] Slurm account, exported as
 #                     SBATCH_ACCOUNT/SALLOC_ACCOUNT (the job scripts carry no
 #                     --account of their own)
+#   DT_WANDB_DISABLED [environment.disable_wandb, default true] 1 turns Weights &
+#                     Biases off whatever the configs say (src/tracking.py);
+#                     also exported as WANDB_MODE=disabled
+#   DT_WORKER_INTERNET [environment.workers_have_internet, default true] 0 on
+#                     clusters whose compute nodes can't reach the internet
+#                     (e.g. Rorqual): the download jobs (prep1, prep2) then run
+#                     on a login node instead of as Slurm jobs
 #   DT_MODULES        [environment.modules, default "StdEnv/2023 python/3.11"
 #                     on a cluster] modules the jobs load before .venv
 #   DT_SYS_PYTHON     a python3 with PyYAML that works before any module is
@@ -122,6 +129,17 @@ except (OSError, yaml.YAMLError) as e:
 
 problems = []
 
+def flag(section, key, default):
+    value = get(section, key).lower()
+    if not value:
+        return default
+    if value in ("true", "yes", "on", "1"):
+        return "1"
+    if value in ("false", "no", "off", "0"):
+        return "0"
+    problems.append(f"{section}.{key} must be true or false: {value}")
+    return default
+
 def get(section, key):
     value = (prof.get(section) or {}).get(key)
     return "" if value is None else str(value).strip()
@@ -148,6 +166,8 @@ values = {
     "DT_OLLAMA_BIN": location("ollama_bin", "~/ollama-local/bin"),
     "DT_OLLAMA_VERSION": get("environment", "ollama_version") or "0.34.4",
     "DT_MODULES": get("environment", "modules") or ("StdEnv/2023 python/3.11" if on_cluster else ""),
+    "DT_WANDB_DISABLED": flag("environment", "disable_wandb", "1"),
+    "DT_WORKER_INTERNET": flag("environment", "workers_have_internet", "1"),
 }
 if on_cluster and not values["DT_ACCOUNT"]:
     problems.append("slurm.account is empty")
@@ -186,8 +206,12 @@ case ":$PATH:" in
 esac
 # Every variable written to ~/.bashrc by the setup, in this order.
 DT_EXPORTS=(DT_REPO DT_CLUSTER DT_PROFILE DT_ACCOUNT DT_MODULES DT_SYS_PYTHON DT_MIMIC_DIR DT_RESULTS_DIR
-            DT_OLLAMA_MODELS DT_OLLAMA_BIN DT_OLLAMA_VERSION OLLAMA_MODELS)
+            DT_OLLAMA_MODELS DT_OLLAMA_BIN DT_OLLAMA_VERSION DT_WANDB_DISABLED DT_WORKER_INTERNET OLLAMA_MODELS)
 export "${DT_EXPORTS[@]}" PATH
+if [ "$DT_WANDB_DISABLED" = 1 ]; then
+    WANDB_MODE=disabled
+    export WANDB_MODE
+fi
 # Not in ~/.bashrc: run_all.sh points it at its own directory for each run.
 DT_LOG_DIR="${DT_LOG_DIR:-$DT_REPO/logs}"
 export DT_LOG_DIR
@@ -287,6 +311,9 @@ dt_write_bashrc() {
         done
         if [ -n "$DT_ACCOUNT" ]; then
             echo "export SBATCH_ACCOUNT=$(printf %q "$DT_ACCOUNT") SALLOC_ACCOUNT=$(printf %q "$DT_ACCOUNT")"
+        fi
+        if [ "$DT_WANDB_DISABLED" = 1 ]; then
+            echo "export WANDB_MODE=disabled"
         fi
         echo "case \":\$PATH:\" in *:$bin_q:*) ;; *) export PATH=$bin_q:\"\$PATH\" ;; esac"
         echo "$end"

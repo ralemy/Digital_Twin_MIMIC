@@ -56,10 +56,11 @@ bound to `127.0.0.1`. No cloud service or external API is used.
    Foundations terms (MedGemma), Meta Llama 3 Community Licence and
    Acceptable Use Policy (Llama 3, Med42), Apache 2.0 (Qwen2.5,
    Baichuan-M2). Confirm their terms permit your use.
-6. **Weights & Biases (optional).** The configs send aggregate metrics (no
-   patient-level values, see section 4) to W&B, an external service.
-   Confirm your ethics approval and data governance permit this and accept
-   W&B's terms — or set `logging.wandb.enabled: false` in the configs.
+6. **Weights & Biases (optional, off by default).** If you turn it on
+   (`environment.disable_wandb: false` in your profile), the jobs send
+   aggregate metrics (no patient-level values, see section 4) to W&B, an
+   external service. Do so only if your ethics approval and data governance
+   permit it, and accept W&B's terms.
 
 This guide takes you from a fresh clone to results:
 
@@ -131,6 +132,8 @@ shells get the variables from `~/.bashrc` automatically.
 | `paths.ollama_bin` | where Ollama is installed; must end in `/bin` (default `~/ollama-local/bin`, ~2 GB) | `DT_OLLAMA_BIN`, first on `PATH` | |
 | `environment.ollama_version` | the Ollama release to install (empty: 0.34.4, the version this project was run with) | `DT_OLLAMA_VERSION` | |
 | `environment.modules` | modules every job loads before `.venv` (empty: `StdEnv/2023 python/3.11`) | `DT_MODULES` | |
+| `environment.disable_wandb` | `true` (default) keeps Weights & Biases off whatever the configs say; `false` allows it (section 4) | `DT_WANDB_DISABLED`, `WANDB_MODE=disabled` | |
+| `environment.workers_have_internet` | whether the cluster's compute nodes reach the internet: `true` (default, e.g. Nibi) or `false` (e.g. Rorqual) — with `false`, downloads run on a login node (section 4) | `DT_WORKER_INTERNET` | |
 | `physionet.username`, `physionet.password` | your PhysioNet account, credentialed for MIMIC-IV — read only by the download job | (not exported) | |
 
 Paths must be absolute; `~`, `$HOME`, `$SCRATCH`, `$USER` and `$DT_REPO`
@@ -266,6 +269,10 @@ sbatch jobs/prep1_download_mimic_nibi.sh          # MIMIC-IV 3.1; resumable, re-
 sbatch jobs/verify_mimic_nibi.sh                  # after it finishes
 ```
 
+If your profile says `workers_have_internet: false`, run the download on the
+login node instead (see "Clusters without internet on compute nodes" below);
+`verify` needs no internet and is submitted as usual.
+
 The result is the standard PhysioNet layout, reached by the configs
 through the repo's `mimic-iv` symlink:
 
@@ -295,6 +302,8 @@ The configs compare six models (~190 GB in total):
 sbatch jobs/prep2_download_models.sh config/config_alliance_lean.yaml
 ```
 
+(With `workers_have_internet: false`, run it on the login node — below.)
+
 It pulls only what's missing from `$DT_OLLAMA_MODELS` and creates the
 aliases; re-submit after a timeout and it resumes. None of the downloads
 needs a login, but accept each model's licence first ("Before you start",
@@ -303,19 +312,45 @@ never download: they stop with the commands to run if a model is missing.
 
 ### Clusters without internet on compute nodes (e.g. Rorqual)
 
-`prep1` and `prep2` download from the internet, which works on Nibi (all
-nodes have access) but **not on Rorqual's compute nodes**. There, copy the
-MIMIC-IV files and the models directory from a cluster that has them with
+`prep1` and `prep2` download from the internet. On Nibi every node has
+access, so they run as Slurm jobs. On clusters whose compute nodes have none
+(Rorqual), set `environment.workers_have_internet: false` in your profile (and
+redo the setup). Then:
+
+- **Run the downloads on a login node, with `bash` instead of `sbatch`.** They
+  take hours, so start them inside `tmux` (or `screen`) so a dropped
+  connection doesn't stop them; both resume where they left off if
+  interrupted:
+
+  ```bash
+  tmux new -s download
+  cd "$DT_REPO"
+  bash jobs/prep1_download_mimic_nibi.sh                        # MIMIC-IV, ~10 GB
+  bash jobs/prep2_download_models.sh config/config_alliance_lean.yaml   # models, ~190 GB
+  # Ctrl+B, D detaches; tmux attach -t download returns
+  ```
+
+  Their output goes to the terminal; `| tee logs/prep1-login.out` keeps a copy.
+- **Submitted with `sbatch` by mistake,** they stop at once with that advice.
+- **`jobs/run_all.sh`** runs its `models` stage on the login node by itself,
+  logging to the run's folder in `logs/`; `--plan` shows it.
+
+Login nodes are shared: these downloads are network-bound and light on CPU
+and memory, and on Rorqual the login node is also the documented data-transfer
+node. Alternatively, copy the files from a cluster that already has them with
 [Globus](https://docs.alliancecan.ca/wiki/Globus) (e.g. `alliancecan#nibi` →
-`alliancecan#rorqual`) into `$DT_MIMIC_DIR` and `$DT_OLLAMA_MODELS`. Once
-everything is present, `prep2` (and `run_all.sh`'s `models` stage) finds
-nothing to download and needs no network. Ask Alliance support if you need
-another route.
+`alliancecan#rorqual`) into `$DT_MIMIC_DIR` and `$DT_OLLAMA_MODELS`; `prep2`
+then finds nothing to download.
 
 ### Live metrics on Weights & Biases (optional)
 
-With `logging.wandb.enabled: true` (the configs' default), the tune,
-calibrate, run and evaluate jobs log aggregate metrics to the W&B project
+W&B is **off by default**: your profile's `environment.disable_wandb: true`
+keeps it off whatever the configs say. It sends aggregate metrics to an
+external service, so turn it on only if your ethics approval and data
+governance allow it ("Before you start", item 6): set
+`environment.disable_wandb: false` in your profile (and redo the setup), and
+keep `logging.wandb.enabled: true` in the config. The tune, calibrate, run
+and evaluate jobs then log aggregate metrics to the W&B project
 `mimic-iv-digital-twin`. Set it up once on a login node:
 
 ```bash
@@ -330,8 +365,8 @@ source .venv/bin/activate && wandb login && chmod 600 ~/.netrc
   values, stay ids or files. A failed forecast is reported only by type,
   e.g. "malformed forecast - see logs for details".
 - If W&B isn't reachable (not logged in, or no internet on the compute
-  node, as on Rorqual), the job logs one warning and runs without it. On
-  such clusters, set `logging.wandb.enabled: false`.
+  nodes, as on Rorqual), the job logs one warning and runs without it; on
+  such clusters keep `disable_wandb: true`.
 
 ---
 
@@ -498,6 +533,8 @@ e.g. after adding conditions — checkpoints mean only new work is computed),
 `--profile <file>` (passed on to every job).
 
 **How it behaves.**
+- **Downloads:** the `models` stage runs prep2 as a Slurm job, or on the login
+  node itself when your profile says `workers_have_internet: false`.
 - **Resolve review:** resolve and extract are skipped if their outputs
   exist. After resolve runs, the driver stops so you can review
   `item_mapping.json` (step 1 above); run the same command again to
@@ -547,6 +584,13 @@ Job output goes to `logs/` in the repo (git-ignored), never the repo base:
 
 The first lines of every `.out` show the
 cluster, account and resolved locations.
+
+The download jobs (prep1, prep2) report their progress in their log as plain
+lines — one per 10 % of each file or model, or at least once a minute — so
+`tail -f logs/<job>.out` or `monitor-job.sh` shows how far they are. Run by
+hand in a terminal on a login node, they show the usual live progress bar
+instead (`jobs/progress_lib.sh`; `DT_PROGRESS_STEP` and `DT_PROGRESS_SECONDS`
+change the interval).
 
 ## 8. Where the results are
 
@@ -652,6 +696,7 @@ jobs/step3c_calibrate_nibi.sh <tuned>     step 3c (GPU)
 jobs/step3_run_experiment_nibi.sh <tuned> step 3 (GPU)
 jobs/step4_evaluate_results_nibi.sh <tuned> step 4
 jobs/ollama_lib.sh                        start/stop Ollama inside a GPU job
+jobs/progress_lib.sh                      log-friendly download progress (prep1, prep2)
 config/config_alliance_lean.yaml          5-variable panel (the default)
 config/config_alliance_full.yaml          19-variable panel
 config/tuning_grid.yaml                   hyperparameter search grid (step 3b)

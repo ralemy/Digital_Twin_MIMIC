@@ -206,7 +206,11 @@ show_plan() {
     echo "== $SCOPE scope ($CONFIG): planned jobs per stage (est. work -> time limits) =="
     for stage in "${STAGES[@]}"; do
         limits=""
-        for m in $(plan_chain "${EST[$stage]}"); do limits+="$(hhmm "$m") "; done
+        if on_login_node "$stage"; then
+            limits="on the login node, no Slurm job (workers have no internet) "
+        else
+            for m in $(plan_chain "${EST[$stage]}"); do limits+="$(hhmm "$m") "; done
+        fi
         total=$((total + EST[$stage]))
         printf '   %-10s %-8s -> %s(%s)\n' "$stage" "$(human "${EST[$stage]}")" "$limits" "$(stage_config "$stage")"
     done
@@ -337,6 +341,31 @@ outputs_exist() {
     esac
 }
 
+# Stages that download from the internet; on clusters whose worker nodes
+# have none (environment.workers_have_internet: false), they run here on the
+# login node instead of as Slurm jobs.
+needs_internet() { [ "$1" = models ]; }
+on_login_node() { needs_internet "$1" && [ "${DT_WORKER_INTERNET:-1}" != 1 ]; }
+
+# Run a stage's job script directly on this login node (no Slurm), logging to
+# this run's log directory. Its script resumes where it left off, so a run
+# interrupted by a driver restart is simply started again.
+run_on_login_node() {
+    local stage=$1 out
+    out="$DT_LOG_DIR/${stage}-login-node-$(date +%Y%m%d-%H%M%S).out"
+    log "$stage: worker nodes have no internet access (environment.workers_have_internet: false)"
+    log "$stage: running ${SCRIPT[$stage]} on this login node instead of submitting it; output: $out"
+    state_set "$stage" running 1 login-node
+    if bash "${SCRIPT[$stage]}" "$(stage_config "$stage")" "${PROFILE_ARGS[@]}" > "$out" 2>&1; then
+        state_set "$stage" done 1 login-node
+        log "$stage: COMPLETED"
+        return 0
+    fi
+    state_set "$stage" failed 1 login-node
+    log "$stage: FAILED on the login node — see $out"
+    return 1
+}
+
 run_stage() {
     local stage=$1 status round jobs est rc max_rounds=$MAX_ROUNDS
     [ "$UNATTENDED" -eq 1 ] && max_rounds=$MAX_ROUNDS_UNATTENDED
@@ -345,12 +374,17 @@ run_stage() {
         done|skipped) log "$stage: done earlier"; return 0 ;;
         review) log "$stage: item mapping reviewed — continuing"; state_set "$stage" done "$(state_round "$stage")" $(state_jobs "$stage"); return 0 ;;
     esac
+    if on_login_node "$stage"; then
+        run_on_login_node "$stage"
+        return $?
+    fi
     if [ -z "$status" ] && [ "$REDO_EXTRACT" -eq 0 ] && outputs_exist "$stage"; then
         log "$stage: outputs already exist — skipped (use --redo-extract to re-run)"
         state_set "$stage" skipped 0
         return 0
     fi
     jobs=$(state_jobs "$stage")
+    [ "$jobs" = login-node ] && jobs=""      # was run on a login node; nothing to re-attach to
     round=$(state_round "$stage"); round=${round:-0}
     if [ "$status" = failed ]; then
         log "$stage: failed last time — resubmitting from its checkpoints"
