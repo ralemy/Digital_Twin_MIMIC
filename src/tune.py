@@ -205,6 +205,9 @@ def write_tuned_config(config_path: str, grid_path: str, overrides: dict, grid: 
               "# re-run tuning instead. Identical to the base config except for the overrides\n"
               "# listed under tuned_from, and results_dir / checkpoint_dir, which point to\n"
               "# separate *_tuned locations so the untuned run's outputs are kept.\n")
+    # On clusters whose compute nodes can't write the repo (Trillium), out is a
+    # symlink into $DT_RESULTS_DIR/tuned-configs (jobs/setup_bash.sh); write through it.
+    out.resolve().parent.mkdir(parents=True, exist_ok=True)
     out.write_text(header + yaml.safe_dump(tuned, sort_keys=False, allow_unicode=True))
     return out
 

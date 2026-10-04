@@ -52,21 +52,40 @@
 #                     clusters whose compute nodes can't reach the internet
 #                     (e.g. Rorqual): the download jobs (prep1, prep2) then run
 #                     on a login node instead of as Slurm jobs
+#                     (default false on Trillium)
+#   DT_WORKER_WRITES_REPO [environment.workers_can_write_repo, default true,
+#                     false on Trillium] 0 where compute nodes can only read
+#                     $HOME and /project: results_dir and logs_dir must then be
+#                     elsewhere (on $SCRATCH), and the tuned configs the tune
+#                     job writes (config/<config>_tuned.yaml) become symlinks
+#                     into $DT_RESULTS_DIR/tuned-configs
+#   DT_GPU_JOBS_ONLY  [slurm.gpu_jobs_only, default false, true on Trillium] 1
+#                     where every job must take a GPU and may not ask for
+#                     memory (Trillium's GPU subcluster): jobs/submit.sh then
+#                     gives every job --gpus-per-node=1 and drops --mem
+#   DT_LOGS_ROOT      [paths.logs_dir, default $DT_REPO/logs] where job .out
+#                     files and Ollama logs go (jobs/submit.sh, jobs/run_all.sh)
 #   DT_MODULES        [environment.modules, default "StdEnv/2023 python/3.11"
 #                     on a cluster] modules the jobs load before .venv
 #   DT_SYS_PYTHON     a python3 with PyYAML that works before any module is
 #                     loaded (reads the profile); found automatically
-#   DT_CLUSTER        $CC_CLUSTER (nibi, rorqual, ...), or "local"
+#   DT_CLUSTER        $CC_CLUSTER (nibi, rorqual, trillium, ...), or "local"
 #   DT_PROFILE        the profile that was read
-#   DT_LOG_DIR        where jobs write their Ollama logs: $DT_REPO/logs unless
+#   DT_LOG_DIR        where jobs write their Ollama logs: $DT_LOGS_ROOT unless
 #                     already set (jobs/run_all.sh sets a directory per run);
-#                     Slurm's own .out files go to logs/ via #SBATCH --output
+#                     Slurm's own .out files go there through jobs/submit.sh
 # The PhysioNet credentials in the profile are NOT read here — only by the
 # download job, through jobs/load_profile.sh.
 # =============================================================================
 
 DT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DT_CLUSTER="${CC_CLUSTER:-local}"
+DT_CLUSTER="${CC_CLUSTER:-}"
+if [ -z "$DT_CLUSTER" ]; then
+    case "$(hostname -s)" in
+        tri-login*|trig-login*) DT_CLUSTER=trillium ;;
+        *) DT_CLUSTER=local ;;
+    esac
+fi
 DT_PROFILE="${DT_PROFILE:-$HOME/.config/dt_profile.yml}"
 DT_PROFILE="${DT_PROFILE/#\~/$HOME}"
 if [ -z "${DT_SYS_PYTHON:-}" ]; then
@@ -159,6 +178,9 @@ def location(key, default=""):
     return os.path.normpath(expanded)
 
 on_cluster = cluster != "local"
+# Trillium: no internet on compute nodes, $HOME and /project read-only there,
+# and (from the GPU login node) every job takes a GPU, with no --mem.
+trillium = cluster == "trillium"
 values = {
     "DT_ACCOUNT": get("slurm", "account"),
     "DT_MIMIC_DIR": location("mimic_dir"),
@@ -168,8 +190,22 @@ values = {
     "DT_OLLAMA_VERSION": get("environment", "ollama_version") or "0.34.4",
     "DT_MODULES": get("environment", "modules") or ("StdEnv/2023 python/3.11" if on_cluster else ""),
     "DT_WANDB_DISABLED": flag("environment", "disable_wandb", "1"),
-    "DT_WORKER_INTERNET": flag("environment", "workers_have_internet", "1"),
+    "DT_WORKER_INTERNET": flag("environment", "workers_have_internet", "0" if trillium else "1"),
+    "DT_WORKER_WRITES_REPO": flag("environment", "workers_can_write_repo", "0" if trillium else "1"),
+    "DT_GPU_JOBS_ONLY": flag("slurm", "gpu_jobs_only", "1" if trillium else "0"),
+    "DT_LOGS_ROOT": location("logs_dir", "$DT_REPO/logs"),
 }
+if values["DT_WORKER_WRITES_REPO"] == "0":
+    # Jobs write results and logs; compute nodes here only read $HOME and /project.
+    read_only = [os.path.realpath(d) for d in
+                 (os.environ.get("HOME"), os.environ.get("PROJECT"), "/project", "/home") if d]
+    for key, var in (("results_dir", "DT_RESULTS_DIR"), ("logs_dir", "DT_LOGS_ROOT")):
+        real = os.path.realpath(values[var]) if values[var] else ""
+        for root in read_only:
+            if real == root or real.startswith(root + "/"):
+                problems.append(f"paths.{key} must be on $SCRATCH: compute nodes here can't write {root} "
+                                f"(environment.workers_can_write_repo is false): {values[var]}")
+                break
 if on_cluster and not values["DT_ACCOUNT"]:
     problems.append("slurm.account is empty")
 if os.path.basename(values["DT_OLLAMA_BIN"]) != "bin":
@@ -207,14 +243,15 @@ case ":$PATH:" in
 esac
 # Every variable written to ~/.bashrc by the setup, in this order.
 DT_EXPORTS=(DT_REPO DT_CLUSTER DT_PROFILE DT_ACCOUNT DT_MODULES DT_SYS_PYTHON DT_MIMIC_DIR DT_RESULTS_DIR
-            DT_OLLAMA_MODELS DT_OLLAMA_BIN DT_OLLAMA_VERSION DT_WANDB_DISABLED DT_WORKER_INTERNET OLLAMA_MODELS)
+            DT_LOGS_ROOT DT_OLLAMA_MODELS DT_OLLAMA_BIN DT_OLLAMA_VERSION DT_WANDB_DISABLED DT_WORKER_INTERNET
+            DT_WORKER_WRITES_REPO DT_GPU_JOBS_ONLY OLLAMA_MODELS)
 export "${DT_EXPORTS[@]}" PATH
 if [ "$DT_WANDB_DISABLED" = 1 ]; then
     WANDB_MODE=disabled
     export WANDB_MODE
 fi
 # Not in ~/.bashrc: run_all.sh points it at its own directory for each run.
-DT_LOG_DIR="${DT_LOG_DIR:-$DT_REPO/logs}"
+DT_LOG_DIR="${DT_LOG_DIR:-$DT_LOGS_ROOT}"
 export DT_LOG_DIR
 if [ -n "$DT_ACCOUNT" ]; then
     SBATCH_ACCOUNT="$DT_ACCOUNT"
@@ -256,9 +293,33 @@ dt_make_links() {
             echo "   $name -> $target (created)"
         fi
     done
-    mkdir -p "$DT_RESULTS_DIR" "$DT_REPO/logs"
+    mkdir -p "$DT_RESULTS_DIR" "$DT_LOGS_ROOT"
     echo "   results: $DT_RESULTS_DIR/mimic-iv-twin-work{,-full}"
-    echo "   job logs: $DT_REPO/logs/"
+    echo "   job logs: $DT_LOGS_ROOT/"
+    [ "$DT_WORKER_WRITES_REPO" = 1 ] || dt_link_tuned_configs
+}
+
+# Where compute nodes can't write the repo, the tune job's output,
+# config/<config>_tuned.yaml, is a symlink to $DT_RESULTS_DIR/tuned-configs/
+# (src/tune.py writes through it). A tuned config that is already a real
+# file is left as it is.
+dt_link_tuned_configs() {
+    local base tuned target dir="$DT_RESULTS_DIR/tuned-configs"
+    mkdir -p "$dir"
+    for base in "$DT_REPO"/config/config_*.yaml; do
+        case "$base" in *_tuned.yaml) continue ;; esac
+        tuned="${base%.yaml}_tuned.yaml"
+        target="$dir/$(basename "$tuned")"
+        if [ -e "$tuned" ] && [ ! -L "$tuned" ]; then
+            echo "   config/$(basename "$tuned") is a real file — left as is, but jobs here can't rewrite it;" \
+                 "move it to $target and run the setup again to link it"
+        elif [ -L "$tuned" ] && [ "$(readlink "$tuned")" = "$target" ]; then
+            echo "   config/$(basename "$tuned") -> $target (unchanged)"
+        else
+            ln -sfn "$target" "$tuned"
+            echo "   config/$(basename "$tuned") -> $target (written by the tune job)"
+        fi
+    done
 }
 
 # Installs the Ollama release DT_OLLAMA_VERSION into the parent of

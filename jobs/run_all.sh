@@ -21,6 +21,8 @@
 #   calibrate  step3c_calibrate_nibi.sh        <tuned config>
 #   run        step3_run_experiment_nibi.sh    <tuned config>
 #   evaluate   step4_evaluate_results_nibi.sh  <tuned config>
+# Jobs are submitted through jobs/submit.sh, which adapts them to the cluster
+# (on Trillium: run this from the GPU login node; every job takes one GPU).
 # lean = config/config_alliance_lean.yaml, full = config/config_alliance_full.yaml.
 # evaluate writes statistical_analysis.json (RQ1-RQ3) to the tuned results_dir.
 # resolve/extract are skipped if their outputs already exist. After resolve
@@ -280,7 +282,7 @@ submit_chain() {
     for m in $(plan_chain "$est"); do
         dep=()
         [ ${#ids[@]} -gt 0 ] && dep=(--dependency="afternotok:$(IFS=:; echo "${ids[*]}")" --kill-on-invalid-dep=yes)
-        if ! jid=$(sbatch --parsable --time="$(hhmm "$m")" --output="$DT_LOG_DIR/%x-%j.out" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}"); then
+        if ! jid=$(bash jobs/submit.sh --parsable --time="$(hhmm "$m")" --output="$DT_LOG_DIR/%x-%j.out" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}"); then
             log "$stage: sbatch failed"
             [ ${#ids[@]} -gt 0 ] && scancel "${ids[@]}"
             return 1
@@ -319,7 +321,7 @@ watch_chain() {
                 return 3 ;;
             *)
                 FAILS=$((FAILS + 1))
-                out=$(ls logs/*-"${ids[i]}".out logs/*/*-"${ids[i]}".out 2>/dev/null | head -n 1)
+                out=$(ls "$DT_LOGS_ROOT"/*-"${ids[i]}".out "$DT_LOGS_ROOT"/*/*-"${ids[i]}".out 2>/dev/null | head -n 1)
                 log "$stage: job ${ids[i]} $st — see ${out:-its .out file}"
                 if [ "$FAILS" -ge "$MAX_FAILS" ]; then
                     log "$stage: $FAILS jobs in a row failed — stopping"
@@ -499,9 +501,9 @@ touch "$HEARTBEAT"
 # This run's job logs: every job this driver submits writes its Slurm output
 # and its Ollama log here (sbatch --output, and DT_LOG_DIR in the job's
 # environment), so one unattended run's logs are together.
-RUN_LOG_DIR="logs/run_all-$SCOPE-$(date +%Y%m%d-%H%M%S)"
+RUN_LOG_DIR="$DT_LOGS_ROOT/run_all-$SCOPE-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN_LOG_DIR"
-DT_LOG_DIR="$DT_REPO/$RUN_LOG_DIR"
+DT_LOG_DIR="$RUN_LOG_DIR"
 export DT_LOG_DIR
 echo "$RUN_LOG_DIR" > "$LOGDIR_FILE"
 

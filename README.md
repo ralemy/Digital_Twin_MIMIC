@@ -205,6 +205,19 @@ An existing Ollama install is left as it is (delete `bin/ollama` to
 reinstall, e.g. for another `ollama_version`); `.venv` is rebuilt only if
 it isn't valid (delete it to force a rebuild).
 
+**Trillium.** The setup recognises it and applies its rules (each is a
+profile key you can also set yourself): compute nodes have no internet
+(`workers_have_internet`), can't write `$HOME` or `/project`
+(`workers_can_write_repo` — `paths.results_dir` and `paths.logs_dir` must
+be on `$SCRATCH`, and the tuned configs become symlinks into
+`results_dir`), and GPU-subcluster jobs must take a GPU and may not ask for
+memory (`slurm.gpu_jobs_only`). Run `jobs/run_all.sh` from the GPU login
+node (`trig-login01`); every job then gets one H100 (a quarter node, 24
+cores, ~188 GiB) and no `--mem`, including the short CPU-only steps. Submit
+single jobs with `bash jobs/submit.sh jobs/<job>.sh ...` rather than
+`sbatch`: it applies these rules, and on every cluster sends the `.out`
+file to `paths.logs_dir`.
+
 Jobs never need the lock or `~/.bashrc`: each one re-reads the profile
 itself (through `jobs/load_profile.sh`, which sources `jobs/setup_bash.sh`
 in read-only mode) and prints the cluster, account and resolved locations

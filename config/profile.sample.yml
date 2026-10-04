@@ -31,6 +31,13 @@ slurm:
   # automatically). Exported as SBATCH_ACCOUNT, so sbatch/salloc use it.
   account: ""
 
+  # true where every job must take a GPU and may not ask for memory — the
+  # GPU subcluster of Trillium (submit from its GPU login node, trig-login01).
+  # jobs/submit.sh (used by jobs/run_all.sh) then asks for one GPU per job
+  # and drops --mem. Leave empty for the cluster's default: true on Trillium,
+  # false elsewhere.
+  gpu_jobs_only:
+
 paths:
   # Where the MIMIC-IV files (hosp/, icu/) are downloaded — ~10 GB. Project
   # space is backed up and not purged; only credentialed people may be able to
@@ -41,7 +48,13 @@ paths:
   # Where results are recorded: <results_dir>/mimic-iv-twin-work (lean) and
   # <results_dir>/mimic-iv-twin-work-full (full). Same access rules as the
   # data. Example: ~/projects/def-yourpi/dt-results
+  # On Trillium, compute nodes can't write /project or $HOME: use $SCRATCH
+  # (e.g. $SCRATCH/dt-results) and copy finished results to /project.
   results_dir: ""
+
+  # Where job .out files and Ollama logs go. Leave empty for $DT_REPO/logs;
+  # on Trillium it must be on $SCRATCH, e.g. $SCRATCH/dt-logs.
+  logs_dir: ""
 
   # Where the Ollama models are downloaded — ~190 GB for all six. Scratch has
   # room but is purged after a period of inactivity (re-run prep2 if models
@@ -70,11 +83,18 @@ environment:
   disable_wandb: true
 
   # Whether this cluster's compute (worker) nodes can reach the internet:
-  # true on Nibi, false on Rorqual (see the cluster's Alliance wiki page).
+  # true on Nibi, false on Rorqual and Trillium (see the cluster's Alliance
+  # wiki page). Leave empty for the default: false on Trillium, else true.
   # With false, the downloads (MIMIC-IV with prep1, the Ollama models with
   # prep2) run on a login node instead of as Slurm jobs — jobs/run_all.sh does
   # that by itself; run prep1/prep2 by hand with bash (README, section 4).
-  workers_have_internet: true
+  workers_have_internet:
+
+  # Whether compute nodes can write the repo, $HOME and /project. Leave empty
+  # for the default: false on Trillium, true elsewhere. With false the setup
+  # requires results_dir and logs_dir outside them, and makes the tuned
+  # configs (config/<config>_tuned.yaml) symlinks into results_dir.
+  workers_can_write_repo:
 
 physionet:
   # Your PhysioNet account, credentialed for MIMIC-IV — used only by

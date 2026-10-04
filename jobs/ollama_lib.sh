@@ -37,7 +37,14 @@ print(s["OLLAMA_NUM_PARALLEL"], s["OLLAMA_FLASH_ATTENTION"])' "$config") || retu
     export OLLAMA_HOST="127.0.0.1:${port}"
     export DT_OLLAMA_HOST="http://127.0.0.1:${port}"
     mkdir -p "$OLLAMA_MODELS" "$DT_LOG_DIR"
-    ollama serve > "$log_file" 2>&1 &
+    # ollama serve keeps its key in ~/.ollama. Where compute nodes can't write
+    # $HOME (Trillium) and no key was made on a login node yet, give it the
+    # job's own directory instead (models still come from OLLAMA_MODELS).
+    local serve_home=$HOME
+    if [ ! -f "$HOME/.ollama/id_ed25519" ] && [ ! -w "$HOME" ]; then
+        serve_home=${SLURM_TMPDIR:-/tmp}
+    fi
+    HOME=$serve_home ollama serve > "$log_file" 2>&1 &
     OLLAMA_PID=$!
     trap stop_ollama EXIT
     echo "== waiting for ollama on ${OLLAMA_HOST} =="
