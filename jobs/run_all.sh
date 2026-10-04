@@ -135,7 +135,7 @@ fi
 
 source "$(cd "$(dirname "$0")" && pwd)/load_profile.sh" || exit 1
 load_profile "${PROFILE_ARGS[@]}" || exit 1
-cd "$AGENTIC_DT_PRJ" || exit 1
+cd "$DT_REPO" || exit 1
 
 if [ "$SCOPE" = lean ]; then
     CONFIG=config/config_nibi_lean.yaml
@@ -164,9 +164,9 @@ human() { if [ "$1" -ge 60 ]; then printf '%dh %02dm' $(($1 / 60)) $(($1 % 60));
 # Minutes -> Slurm --time (HH:MM:00).
 hhmm() { printf '%02d:%02d:00' $(($1 / 60)) $(($1 % 60)); }
 
-# A config's paths.<key>, with $PROJECT etc. expanded as the jobs see them.
+# A config's paths.<key>, resolved as the jobs see them (repo-relative -> absolute).
 cfg_path() {
-    /usr/bin/python3 -c 'import sys; sys.path.insert(0, "src")
+    "$DT_SYS_PYTHON" -c 'import sys; sys.path.insert(0, "src")
 from common import load_config
 print(load_config(sys.argv[1])["paths"][sys.argv[2]])' "$1" "$2"
 }

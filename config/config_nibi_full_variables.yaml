@@ -1,9 +1,23 @@
 # =============================================================================
-# ALTERNATE SCOPE — NOT what has been described to UVic's HREB. See the
-# same warning in config/config_highend_full_variables.yaml; it applies
-# here unchanged. This is that same 19-variable panel, sized to run as a
-# Slurm batch job on Nibi instead of on a local machine. Paired with
-# jobs/run_full_nibi.sh.
+# ALTERNATE SCOPE — NOT what has been described to UVic's HREB.
+#
+# Same sizing as config_nibi_lean.yaml, but a much larger physiological
+# variable panel: 19 variables instead of 5. This is a genuine scope change,
+# not a hardware one, and it is NOT covered by the application UVic's HREB
+# has already reviewed:
+#   - Chapter 5 (methods) states the panel is "five variables ... heart
+#     rate, respiratory rate, peripheral oxygen saturation (SpO2), mean
+#     arterial pressure (MAP), and serum lactate."
+#   - The letter already sent to the Board (Letter_to_UVic_HREB.docx,
+#     Appendix A) states in writing: "This matches the version of the
+#     variable panel the Board is seeing, and will not change."
+#   - The item_mapping.json the Board was told to expect (Section E.7 /
+#     F.7 of the application) was scoped to five variables' worth of
+#     itemids, not nineteen.
+# Running this file produces results the current ethics approval does not
+# cover. It exists so the code is ready if/when that revision is made, not
+# as permission to run it before then. Run with jobs/run_all.sh full
+# --hreb-approved only once an amendment has been approved.
 #
 # Do not run this against real MIMIC-IV data until a deliberate decision
 # has been made to expand the panel and an amendment has been submitted
@@ -11,16 +25,18 @@
 #
 # Differences from config_nibi_lean.yaml: the variable panel (19 vs 5),
 # llm.max_tokens/num_ctx (longer JSON output and prompt), and work_dir
-# (separate from the lean job's, so the two never collide on $PROJECT).
+# (separate from the lean job's, so the two never collide on disk).
 # Same cluster/hardware caveats as config_nibi_lean.yaml apply — read
 # that file's header comments too.
 # =============================================================================
 
+# mimic-iv is the repo's symlink to $DT_MIMIC_DIR; $DT_RESULTS_DIR is set in
+# jobs/setup_bash.sh.
 paths:
-  mimic_root: "$PROJECT/mimic-iv"
-  work_dir: "$PROJECT/mimic-iv-twin-work-full"
-  cache_dir: "$PROJECT/mimic-iv-twin-work-full/cache"
-  results_dir: "$PROJECT/mimic-iv-twin-work-full/results"
+  mimic_root: "mimic-iv"
+  work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full"
+  cache_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full/cache"
+  results_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full/results"
 
 performance:
   duckdb_threads: 10
@@ -39,10 +55,11 @@ cohort:
   min_age_years: 18
   min_icu_stay_hours: 48
   first_stay_only: true
-  # 19 variables means a smaller eligible cohort passes the 50% coverage
-  # filter than under the 5-variable panel — see config_highend_full_variables.yaml's
-  # note on this. Expect fewer than 3000 eligible patients before max_patients
-  # even applies.
+  # 19 variables means a patient needs 50% coverage across a much larger
+  # panel to be included — more of the cohort fails this filter than under
+  # the 5-variable panel, where broad availability was one of the selection
+  # criteria (Section 5.3/5.4). Expect fewer than 3000 eligible patients
+  # before max_patients even applies.
   min_panel_coverage: 0.5
   observation_window_hours: 24
   forecast_horizon_hours: 24

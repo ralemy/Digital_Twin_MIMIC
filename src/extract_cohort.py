@@ -1,7 +1,7 @@
 """
 Step 1: build the analytic cohort and extract the tight variable panel, entirely
 locally with DuckDB running directly over the raw PhysioNet .csv/.csv.gz files
-under ~/mimic-iv/{hosp,icu}. No data leaves the machine at any point.
+under $DT_MIMIC_DIR/{hosp,icu} (the repo's mimic-iv link). No data leaves the machine at any point.
 
 Inclusion criteria (Chapter 5, Section 5.3):
   - first ICU stay per patient that lasted >= 48 hours (earlier, shorter

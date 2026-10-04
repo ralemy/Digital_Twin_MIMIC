@@ -226,8 +226,7 @@ GBM, LSTM) are unaffected.
      20.9% full pipeline).
    - [src/forecasting_agent.py](../src/forecasting_agent.py)
 3. **The 19-variable configs have a longer request timeout.**
-   `request_timeout_s` is now 600 (was 240) in `config_nibi_full_variables.yaml`
-   and `config_highend_full_variables.yaml`.
+   `request_timeout_s` is now 600 (was 240) in `config_nibi_full_variables.yaml`.
 4. **A missing variable gets the naive forecast for that variable only**,
    instead of the whole forecast falling back. This is a methods change. It
    is described in the README under "Notes → Missing variables" and reported

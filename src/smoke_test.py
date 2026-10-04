@@ -14,7 +14,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -99,7 +101,8 @@ def mock_llm_generate(self, prompt, system=None, json_mode=False):
 
 
 def main(config_path: str) -> None:
-    tmp_dir = Path("/tmp/mimic_twin_smoke_test")
+    # Node-local in a job, the system temp directory elsewhere.
+    tmp_dir = Path(os.environ.get("SLURM_TMPDIR") or tempfile.gettempdir()) / "mimic_twin_smoke_test"
     cfg = make_synthetic_config(config_path, tmp_dir)
     cohort, panel_long = make_synthetic_cohort_and_panel(cfg)
 

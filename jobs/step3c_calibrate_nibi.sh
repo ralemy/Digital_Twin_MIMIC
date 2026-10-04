@@ -13,17 +13,14 @@
 #
 # Resuming: forecasts are checkpointed per batch; after a time limit or
 # failure submit it again, or chain a continuation:
-#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
 #   JOB=$(sbatch --parsable jobs/step3c_calibrate_nibi.sh config/config_nibi_lean_tuned.yaml)
 #   sbatch --dependency=afterany:$JOB jobs/step3c_calibrate_nibi.sh config/config_nibi_lean_tuned.yaml
 # Other arguments after the config go to calibrate.py (e.g. --full-refresh).
 #
-# Settings (project directory, data_root, Ollama model store) come from your
-# profile, ~/.config/dt_profile.yml (see config/profile.sample.yml and README,
-# 'Your profile'). To use another profile, add --profile <file> anywhere in the
-# job's arguments. Submit from the project directory.
+# Paths (repo, MIMIC-IV, Ollama models, modules) come from
+# jobs/setup_bash.sh, picked by cluster. Submit from the repository base.
 # =============================================================================
-#SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-step3c-calibrate
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=12
@@ -34,17 +31,17 @@
 set -euo pipefail
 
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-cd "$AGENTIC_DT_PRJ"
+cd "$DT_REPO"
 CONFIG="${1:-config/config_nibi_lean_tuned.yaml}"
 echo "== job ${SLURM_JOB_ID:-local} starting on $(hostname) at $(date) — config=$CONFIG =="
 [ -f "$CONFIG" ] || { echo "== $CONFIG not found — run step3b (tuning) first, or pass a config ==" >&2; exit 1; }
 
-module load python/3.11
-source "$AGENTIC_DT_PRJ/.venv/bin/activate"
+module load $DT_MODULES          # jobs/setup_bash.sh
+source "$DT_REPO/.venv/bin/activate"
 source jobs/ollama_lib.sh
 start_ollama "$CONFIG"         # OLLAMA_NUM_PARALLEL / FLASH_ATTENTION from the config
 require_models "$CONFIG" all

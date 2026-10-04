@@ -1,8 +1,12 @@
 # Installing Ollama on a remote machine without root access:
 
+Unpack into the parent of `$DT_OLLAMA_BIN` (set per cluster in
+`jobs/setup_bash.sh`; the archive holds `bin/` and `lib/`):
+
 ```bash
-mkdir -p ~/ollama-local
-cd ~/ollama-local
+source jobs/setup_bash.sh      # from the repository base
+mkdir -p "$(dirname "$DT_OLLAMA_BIN")"
+cd "$(dirname "$DT_OLLAMA_BIN")"
 curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst -o ollama.tar.zst
 tar --zstd -xf ollama.tar.zst
 ```
@@ -21,18 +25,9 @@ if download fails:
 curl -fsSL https://github.com/ollama/ollama/releases/download/v0.34.4/ollama-linux-amd64.tar.zst -o ollama.tar.zst
 ```
 
-add it to path:
-```bash
-echo 'export PATH="$HOME/ollama-local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-create a repo for models:
-```bash
-echo 'export OLLAMA_MODELS="$HOME/ollama-local/models"' >> ~/.bashrc
-source ~/.bashrc
-mkdir -p "$OLLAMA_MODELS"
-```
+Sourcing `jobs/setup_bash.sh` puts `$DT_OLLAMA_BIN` on the PATH and sets
+`OLLAMA_MODELS` to `$DT_OLLAMA_MODELS` (where models are downloaded; the repo's
+`ollama-models` symlink points there); jobs do it themselves.
 
 run server manually:
 ```bash

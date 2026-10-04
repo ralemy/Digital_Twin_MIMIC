@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================================
 # Slurm batch job — download MIMIC-IV (hosp/ and icu/ modules) from PhysioNet
-# into <data_root>/mimic-iv, so the result is
-#   <data_root>/mimic-iv/hosp/*.csv.gz
-#   <data_root>/mimic-iv/icu/*.csv.gz
-# which is the layout config_nibi_*.yaml's mimic_root expects.
+# into $DT_MIMIC_DIR (jobs/setup_bash.sh), so the result is
+#   $DT_MIMIC_DIR/hosp/*.csv.gz
+#   $DT_MIMIC_DIR/icu/*.csv.gz
+# which the repo's mimic-iv link (the configs' mimic_root) points to.
 #
 # Uses wget, as PhysioNet documents (PhysioNet answers curl with 403
 # Forbidden, see mimic-twin-download-22971979.out). Instead of crawling the
@@ -22,21 +22,20 @@
 # All Nibi nodes have internet access (Alliance docs, Nibi > Site specifics),
 # so this runs fine as a regular job. Single-core and network bound.
 #
-# Settings (data_root, PhysioNet username and password) come from your profile,
-# ~/.config/dt_profile.yml (see config/profile.sample.yml and README,
-# 'Your profile'). To use another profile, add --profile <file> anywhere
-# in the job's arguments.
+# The destination comes from jobs/setup_bash.sh; the PhysioNet username and
+# password from your profile, ~/.config/dt_profile.yml (see
+# config/profile.sample.yml and README, 'Your profile'). To use another
+# profile, add --profile <file> anywhere in the job's arguments.
 # The credentials stay in your private profile (chmod 600 — the job refuses
 # it otherwise) and are never exported to child processes.
 # They are written only to a mode-600 wgetrc file in $SLURM_TMPDIR (removed
 # at exit) that wget reads via $WGETRC, so the password never appears on a
 # command line / in `ps` output.
 #
-# Submit from the project directory:
-#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+# Submit from the repository base:
+#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
 #   sbatch jobs/prep1_download_mimic_nibi.sh [mimic-iv version, default 3.1]
 # =============================================================================
-#SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-download
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1000M
@@ -45,23 +44,22 @@
 
 set -euo pipefail
 
-# Settings come from the profile (~/.config/dt_profile.yml, or --profile
-# <file> among this job's arguments) — see jobs/load_profile.sh. The
-# remaining arguments are this job's own.
+# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-: "${PHYSIONET_USERNAME:?physionet.username is empty in $PROFILE_FILE — fill it in (see config/profile.sample.yml)}"
-: "${PHYSIONET_PASSWORD:?physionet.password is empty in $PROFILE_FILE — fill it in (see config/profile.sample.yml)}"
+: "${PHYSIONET_USERNAME:?physionet.username is empty in ${PROFILE_FILE:-~/.config/dt_profile.yml (not found)} — fill it in (see config/profile.sample.yml)}"
+: "${PHYSIONET_PASSWORD:?physionet.password is empty in ${PROFILE_FILE:-~/.config/dt_profile.yml (not found)} — fill it in (see config/profile.sample.yml)}"
 
 VERSION="${1:-3.1}"
 BASE_URL="https://physionet.org/files/mimiciv/$VERSION/"
-DEST="$PROJECT/mimic-iv"
+DEST="$DT_MIMIC_DIR"
 
 echo "== job $SLURM_JOB_ID starting on $(hostname) at $(date) =="
-echo "== account=def-roudsari  user=$(whoami)  dest=$DEST  mimic-iv=$VERSION =="
+echo "== account=${SLURM_JOB_ACCOUNT:-$DT_ACCOUNT}  user=$(whoami)  dest=$DEST  mimic-iv=$VERSION =="
 
 mkdir -p "$DEST"
 cd "$DEST"

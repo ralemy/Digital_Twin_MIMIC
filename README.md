@@ -5,18 +5,26 @@ no-external-API) methods: a data-harmonization agent, a patient-similarity
 agent, an LLM-based forecasting agent, a critic/validation agent, three
 non-LLM baselines (naive, gradient-boosted trees, LSTM), and the RQ1–RQ3
 statistical analysis, all running on your own machine against a local
-MIMIC-IV export at `~/mimic-iv/{hosp,icu}`.
+MIMIC-IV export at `$DT_MIMIC_DIR/{hosp,icu}` (set in `jobs/setup_bash.sh`;
+the repo's `mimic-iv` symlink points to it).
 
 Originally verified against a GTX 1080 Ti / 32GB RAM machine, comfortably
 sufficient for this lean-scope design — see the earlier discussion on
 hardware feasibility. This is **not** the excluded, cloud-only full-scale
-replication (Chapter 7) — see that discussion for why, and see "Scaling up
-on better hardware" below if you've since moved to a bigger machine.
+replication (Chapter 7) — see that discussion for why. To run on an
+Alliance Canada cluster (Nibi, Rorqual) instead, see "Running on Alliance
+Canada clusters" below.
 
 ## 0. One-time setup
 
 ```bash
-pip install -r requirements.txt
+# Every location (MIMIC-IV, results, Ollama models) is set in
+# jobs/setup_bash.sh's "local" block — edit it first if needed. Running it
+# creates the repo's mimic-iv and ollama-models symlinks and builds .venv;
+# sourcing it sets $DT_MIMIC_DIR, $DT_RESULTS_DIR, ... in your shell:
+bash jobs/setup_bash.sh
+source jobs/setup_bash.sh
+source .venv/bin/activate
 
 # Install Ollama (https://ollama.com) and pull a small quantized open-weight
 # model — anything ~7-8B in 4/5-bit quantization comfortably fits an 11 GB card:
@@ -27,7 +35,7 @@ ollama serve   # usually auto-starts as a background service; leave it running
 Confirm your MIMIC-IV export is laid out as the standard PhysioNet download:
 
 ```
-~/mimic-iv/
+$DT_MIMIC_DIR/          (= the repo's mimic-iv symlink)
   hosp/   patients.csv(.gz)  admissions.csv(.gz)  labevents.csv(.gz)  d_labitems.csv(.gz)  ...
   icu/    icustays.csv(.gz)  chartevents.csv(.gz)  d_items.csv(.gz)  inputevents.csv(.gz)  ...
 ```
@@ -53,7 +61,7 @@ work — much cheaper to find out now than after a multi-hour extraction.
 python src/resolve_items.py --config-file config/config.yaml
 ```
 
-Writes `~/mimic-iv-twin-work/cache/item_mapping.json`. **Open and read this
+Writes `$DT_RESULTS_DIR/mimic-iv-twin-work/cache/item_mapping.json`. **Open and read this
 file before continuing** — it lists every `d_items`/`d_labitems` row matched
 for each of the five panel variables (heart rate, resp rate, SpO2, MAP,
 lactate). MIMIC-IV changes itemids across releases and units can differ
@@ -74,7 +82,7 @@ the result as Parquet, so every subsequent run is fast. Expect this to take
 anywhere from several minutes to an hour or more on first run depending on
 disk speed — it is not using your GPU. Progress is logged.
 
-Writes `~/mimic-iv-twin-work/cohort.parquet` and `panel_long.parquet`.
+Writes `$DT_RESULTS_DIR/mimic-iv-twin-work/cohort.parquet` and `panel_long.parquet`.
 `config.yaml`'s `cohort.max_patients: 300` subsamples to a fast dev-sized
 cohort by default — set it to `null` to use the full eligible cohort once
 you've confirmed everything else works.
@@ -92,7 +100,7 @@ split. This is the step that calls your local LLM repeatedly — with the
 default 300-patient dev cohort this should finish in well under an hour on
 the 1080 Ti; scale up `max_patients` once you've checked the results look
 sane. Raw forecast arrays and per-condition metric summaries are written to
-`~/mimic-iv-twin-work/results/`.
+`$DT_RESULTS_DIR/mimic-iv-twin-work/results/`.
 
 **Resuming a stopped run.** Progress is checkpointed under
 `<work_dir>/checkpoints/run_experiment/` as it goes: the GBM after each
@@ -189,45 +197,27 @@ plausibility-violation-rate reduction + accuracy trade-off check), and RQ3
 If the run used LLM variants, it also adds `model_variant_comparisons`:
 every pair of models within the same LLM condition, compared with the same
 paired test plus plausibility violation rates.
-Writes `~/mimic-iv-twin-work/results/statistical_analysis.json`.
+Writes `$DT_RESULTS_DIR/mimic-iv-twin-work/results/statistical_analysis.json`.
 
-## Scaling up on better hardware
+## What the Alliance configs change (vs. the 1080 Ti config)
 
-If you've moved from the original reference machine (11GB GTX 1080 Ti,
-32GB RAM) to something bigger — e.g. a ~40GB GPU, ~400GB RAM, 24+ CPU
-cores — everything above still works unchanged, but leaves most of that
-hardware idle. Use `config/config_highend.yaml` instead of `config.yaml`
-for every command above (`--config-file config/config_highend.yaml`) to
-actually use it. It's the same design — same 5-variable panel, same
-cohort criteria, same conditions/ablations — just sized differently:
+`config/config_nibi_lean.yaml` is the same design as `config.yaml` — same
+5-variable panel, same cohort criteria, same conditions/ablations — sized
+for one H100 80GB per job instead of an 11GB GTX 1080 Ti:
 
-- **Larger (or full) cohort.** `cohort.max_patients` was capped at 300
-  mainly to keep sequential LLM inference wall-clock time reasonable, not
-  because extraction or the baselines needed it. The high-end config
-  raises it to 3000 as a starting point; set it to `null` for the full
-  eligible cohort once you've timed one run.
+- **Larger cohort.** `cohort.max_patients` is 300 in `config.yaml` mainly
+  to keep sequential LLM inference wall-clock time reasonable, not because
+  extraction or the baselines needed it. The Alliance config raises it to
+  3000; set it to `null` for the full eligible cohort once you've timed one
+  run.
 - **A stronger local model.** An 11GB card only fits a small quantized
-  model (8B/q4). A 40GB card fits something much more capable — the
-  high-end config defaults to `qwen2.5:32b-instruct-q8_0` (~34GB weights,
-  leaves headroom for context/KV cache); `llama3.1:70b-instruct-q4_K_M`
-  (~40GB) is a documented alternative in that file if you want to try it,
-  but it leaves little headroom once you raise `num_ctx` or run more than
-  one request at a time — benchmark one condition before committing to a
-  full run with it. Pull whichever you use with `ollama pull <name>`
-  before running step 4.
-- **Concurrent LLM requests.** The forecasting/critic agents used to call
-  Ollama once per patient, sequentially. `src/pipeline.py` now runs those
+  model (8B/q4). The H100 config defaults to `qwen2.5:32b-instruct-q8_0`
+  (~34GB weights, leaves headroom for context/KV cache), and compares it
+  with the models under `llm.variants`.
+- **Concurrent LLM requests.** `src/pipeline.py` runs the forecasting/critic
   calls through a thread pool sized by `performance.llm_max_concurrent_requests`.
-  This only helps if Ollama itself is willing to process that many
-  requests at once — start it with, e.g.:
-  ```bash
-  OLLAMA_NUM_PARALLEL=4 ollama serve
-  ```
-  matching (or exceeding) `llm_max_concurrent_requests` in the config, and
-  watch `nvidia-smi` on your first run — if VRAM is tight, lower one or
-  both numbers rather than letting Ollama OOM mid-run. The Nibi GPU jobs
-  start Ollama themselves (`jobs/ollama_lib.sh`) and take both settings
-  from the config:
+  The GPU jobs start Ollama themselves (`jobs/ollama_lib.sh`) and take its
+  settings from the config:
   - `OLLAMA_NUM_PARALLEL` is `performance.llm_max_concurrent_requests`, so
     the two always match.
   - `OLLAMA_FLASH_ATTENTION` is `performance.ollama_flash_attention`
@@ -236,55 +226,43 @@ cohort criteria, same conditions/ablations — just sized differently:
   `jobs/bench_ollama_nibi.sh` measures other values before you change them.
 - **GPU-batched LSTM baseline.** With `performance.batch_predict_baselines:
   true`, the LSTM baseline's `predict()` runs once over the whole test
-  split in large GPU batches instead of once per patient — the per-patient
-  loop barely used a 40GB card at all. `LSTMBaseline.fit()` was already
-  full-batch (the whole training tensor stack in one shot), so it needed no
-  change beyond `lstm_hidden_size`/`lstm_epochs` now being configurable and
-  turned up (128 hidden units, 200 epochs vs. 64/30) since training is
-  seconds either way on this hardware.
+  split in large GPU batches instead of once per patient, and
+  `lstm_hidden_size`/`lstm_epochs` are turned up (128 hidden units, 200
+  epochs vs. 64/30) since training takes seconds on this hardware.
 - **DuckDB given its own thread/memory budget.** `performance.duckdb_threads`
   and `performance.duckdb_memory_limit_gb` (used by every DuckDB connection
   via `src/common.py`'s `get_duckdb_connection()`) — set explicitly because
-  DuckDB's auto-detection can undershoot what's actually available inside a
-  container or restricted cgroup. Extraction (step 3) is CPU/RAM-bound, not
-  GPU-bound, so this is what actually speeds that step up, not the GPU.
+  DuckDB's auto-detection can undershoot what a Slurm job's cgroup allows.
+  Extraction is CPU/RAM-bound, not GPU-bound, so this is what speeds that
+  step up.
 
 **What this does *not* unlock: the excluded full-scale (DT-GPT-size,
 ~35,000-patient) cloud replication described in the proposal's Cost
 chapter.** That design is excluded because it calls a third-party-hosted
 managed model over the network, which the dissertation's local-only
-constraint rules out regardless of local hardware — it was never a
-question of VRAM, RAM, or CPU count. This hardware upgrade lets the
-*lean-scope* design run at a much larger local cohort and with a much
-stronger local model, faster — it doesn't change which design is in
-scope.
+constraint rules out regardless of hardware. The H100 lets the
+*lean-scope* design run at a larger cohort with a stronger local model —
+it doesn't change which design is in scope.
 
-**What this also does not do on its own: add more variables to the
-panel.** The five-variable panel (heart rate, respiratory rate, SpO2,
-MAP, lactate) was chosen for clinical relevance and coverage, not because
-the 1080 Ti couldn't handle more variables — extraction and inference
-cost scale roughly linearly with variable count and were never the
-binding constraint. `config_highend.yaml` deliberately keeps the same
-five variables, because that panel is also what's already been described
-to UVic's HREB (Chapter 5/Appendix A, and the Appendix A data collection
-sheet in the letter to the Board). Expanding it is a scope decision, not
-a hardware one — see the next section for the alternate config that does
-expand it, and why it is kept separate.
+**Nor does it add variables to the panel.** The five-variable panel (heart
+rate, respiratory rate, SpO2, MAP, lactate) was chosen for clinical
+relevance and coverage, not because the 1080 Ti couldn't handle more, and
+it is what's already been described to UVic's HREB (Chapter 5/Appendix A,
+and the Appendix A data collection sheet in the letter to the Board).
+Expanding it is a scope decision, not a hardware one — see the next
+section for the alternate config that does, and why it is kept separate.
 
 ## Two configs, two scopes — pick deliberately
 
-There are now five config files, not one, and they are **not**
-interchangeable:
+There are three config files, and they are **not** interchangeable:
 
 | File | Panel | Hardware | Matches current HREB approval? |
 |---|---|---|---|
 | `config/config.yaml` | 5 variables | 1080 Ti / 32GB (small dev cohort) | Yes |
-| `config/config_highend.yaml` | 5 variables (same panel) | 40GB GPU / 400GB RAM / 24 CPU (local machine) | **Yes** — same design UVic's HREB has seen, just faster/larger cohort |
-| `config/config_highend_full_variables.yaml` | 19 variables | same high-end local hardware sizing | **No** — see below |
-| `config/config_nibi_lean.yaml` | 5 variables (same panel) | Nibi, 1× H100 80GB Slurm job | **Yes** — same design as `config_highend.yaml`, different infrastructure |
-| `config/config_nibi_full_variables.yaml` | 19 variables | Nibi, 1× H100 80GB Slurm job | **No** — same caveat as `config_highend_full_variables.yaml` |
+| `config/config_nibi_lean.yaml` | 5 variables (same panel) | Alliance cluster, 1× H100 80GB Slurm job | **Yes** — same design as `config.yaml`, different infrastructure |
+| `config/config_nibi_full_variables.yaml` | 19 variables | Alliance cluster, 1× H100 80GB Slurm job | **No** — see below |
 
-`config_highend_full_variables.yaml` adds 3 more vitals (systolic/diastolic
+`config_nibi_full_variables.yaml` adds 3 more vitals (systolic/diastolic
 blood pressure, temperature) and 11 more labs (creatinine, BUN, sodium,
 potassium, WBC, platelets, hemoglobin, bicarbonate, glucose, total
 bilirubin, pH) to the same 5-variable core, for a 19-variable panel. This
@@ -295,10 +273,10 @@ as final. Nothing about *how* the code works changes for a bigger panel
 forecasting/critic agents, and the baselines all iterate over
 `cfg["variables"]` generically — this was true even at 5 variables), so
 no source files needed to change, only the config. It writes to a
-separate `work_dir` (`~/mimic-iv-twin-work-full`) so it never overwrites
+separate `work_dir` (`$DT_RESULTS_DIR/mimic-iv-twin-work-full`) so it never overwrites
 the 5-variable extraction/results.
 
-**Do not run `config_highend_full_variables.yaml` against real MIMIC-IV
+**Do not run `config_nibi_full_variables.yaml` against real MIMIC-IV
 data yet.** The methods text (Chapter 5) and the letter already sent to
 UVic's HREB (`Letter_to_UVic_HREB.docx`, Appendix A) both describe the
 5-variable panel specifically — the letter states in writing that "this
@@ -309,19 +287,20 @@ what's currently approved. It's included here so the code is ready
 amendment is submitted to the Board — as of this version, that decision
 has not been made and no such amendment has been prepared or sent.
 
-## Running on Nibi (Alliance Canada HPC)
+## Running on Alliance Canada clusters (Nibi, Rorqual, ...)
 
-`config_nibi_lean.yaml` and `config_nibi_full_variables.yaml` are the same
-two scopes described above (5 variables / matches HREB approval, vs. 19
-variables / does not), retargeted from a local high-end machine to a
-[Nibi](https://docs.alliancecan.ca/wiki/Nibi) Slurm allocation — one H100
-80GB GPU per job. Nothing about the pipeline code changed for this; only
-paths (`$PROJECT`/`$SCRATCH` instead of `~/...`) and the CPU/thread numbers
-(capped to Nibi's documented "no more than 14 CPU cores per GPU" guidance,
-not the 24-core local machine's number) differ from `config_highend*.yaml`.
-`src/common.py`'s `load_config()` expands `$ENV_VARS` as well as `~` in
-every `paths:` entry, so these configs only resolve correctly inside an
-Alliance job/login environment where `$PROJECT`/`$SCRATCH` are set.
+`config_nibi_lean.yaml` and `config_nibi_full_variables.yaml` are the two
+scopes described above (5 variables / matches HREB approval, vs. 19
+variables / does not), sized for an Alliance Slurm allocation
+([Nibi](https://docs.alliancecan.ca/wiki/Nibi),
+[Rorqual](https://docs.alliancecan.ca/wiki/Rorqual/en)) — one H100 80GB GPU
+per job. Nothing about the pipeline code changed for this (see "What the
+Alliance configs change" above). Every config's `paths:` use the repo's
+`mimic-iv` symlink and `$DT_RESULTS_DIR`, both set per cluster by
+`jobs/setup_bash.sh` (see "Cluster paths" below); `src/common.py`'s
+`load_config()` resolves the link from the repository base whatever the
+current directory, and stops with a clear message if `$DT_RESULTS_DIR` is
+unset.
 
 There are five submission scripts under `jobs/`, one for the smoke test and
 one per pipeline step, rather than a single job that runs everything —
@@ -333,10 +312,9 @@ argument, so the same script runs either scope — omit it and it defaults
 to `config/config_nibi_lean.yaml` (the HREB-approved scope):
 
 ```bash
-# Submit from the project directory. Every job reads its settings from
-# ~/.config/dt_profile.yml (see "Your profile" further down); add
-# --profile <file> to any job's arguments to use a different one:
-cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+# Submit from the repository base. Every job takes its paths from
+# jobs/setup_bash.sh (see "Cluster paths" further down):
+cd "$DT_REPO"      # after: source jobs/setup_bash.sh
 
 # 0. Pre-flight — no GPU, no Ollama, no real data needed:
 sbatch jobs/smoke_test_nibi.sh
@@ -509,10 +487,38 @@ the public "no more than 14 cores per GPU" ratio, so check
 `sinfo -o "%N %c %m %G"` once you have a session and raise the `#SBATCH`
 lines if more is actually available.
 
-**Your profile: `~/.config/dt_profile.yml`.** Jobs don't read settings from
-environment variables you export: every `jobs/*.sh` script reads them from
-one private YAML file, your profile. Create it once from the sample and fill
-it in:
+**Cluster paths: `jobs/setup_bash.sh`.** Every location that differs
+between Alliance clusters (Nibi, Rorqual, ...) or between users is set in
+this one file, in a block per cluster picked by `$CC_CLUSTER` (which the
+Alliance environment sets; without it, a `local` block for a workstation).
+Moving to another cluster, or handing the project to another user, means
+editing only this file: `jobs/`, `config/`, `src/` and the docs use its
+variables. Jobs source it themselves (through `jobs/load_profile.sh`); in
+your own shell, source it before `sbatch`/`salloc` — it also sets the Slurm
+account, which the job scripts no longer carry. Easiest is once in
+`~/.bashrc`:
+
+```bash
+echo 'source <where you cloned the repo>/jobs/setup_bash.sh' >> ~/.bashrc
+```
+
+| Variable | What it is | Repo symlink |
+|---|---|---|
+| `DT_REPO` | where the git repo is cloned (found from the file's own location — no edit needed) | |
+| `DT_MIMIC_DIR` | where the MIMIC-IV files (`hosp/`, `icu/`) are downloaded | `mimic-iv` |
+| `DT_RESULTS_DIR` | where results are recorded: `$DT_RESULTS_DIR/mimic-iv-twin-work` (lean) and `$DT_RESULTS_DIR/mimic-iv-twin-work-full` (19 variables) | |
+| `DT_OLLAMA_MODELS` | where the Ollama models are downloaded (exported as `OLLAMA_MODELS`) | `ollama-models` |
+| `DT_ACCOUNT` | Slurm account (exported as `SBATCH_ACCOUNT`, `SALLOC_ACCOUNT`) | |
+| `DT_MODULES` | modules every job loads before activating `.venv` | |
+| `DT_SYS_PYTHON` | a `python3` with PyYAML usable before any module is loaded | |
+| `DT_OLLAMA_BIN` | directory with the `ollama` binary (put first on `PATH`) | |
+
+`mimic-iv` and `ollama-models` are always symlinks, created by
+`bash jobs/setup_bash.sh`. To run on another cluster, add a block for it to
+`jobs/setup_bash.sh` and run the one-time setup below there.
+
+**Your profile: `~/.config/dt_profile.yml`** — only for the PhysioNet
+credentials, which only prep1 uses. Create it once from the sample:
 
 ```bash
 cp config/profile.sample.yml ~/.config/dt_profile.yml
@@ -520,82 +526,54 @@ chmod 600 ~/.config/dt_profile.yml     # it holds your PhysioNet password
 nano ~/.config/dt_profile.yml          # or any editor
 ```
 
-| Profile key | What it is | Used by |
-|---|---|---|
-| `paths.project_dir` | this repo (`.venv`, `src/`, `config/`); defaults to the repo you submit from | all jobs |
-| `paths.data_root` | where data and results live — the configs' `$PROJECT` (`$PROJECT/mimic-iv`, `$PROJECT/mimic-iv-twin-work`, ...); defaults to `project_dir` | all jobs |
-| `paths.ollama_models` | the Ollama model store | prep2, prep3, step 3 |
-| `paths.ollama_bin` | directory with the `ollama` binary | prep2, prep3, step 3 |
-| `physionet.username` / `password` | PhysioNet account credentialed for MIMIC-IV | prep1 only |
-
 Keep the profile private: it lives in your home directory, outside this
 repo, and must not be committed or copied to `/project` (shared with the
 group). A job refuses a profile that holds a password but is readable by
 anyone else (`chmod 600` fixes it), and the password is never exported to
 the job's child processes — prep1 writes it only to a temporary mode-600
-`wgetrc` that is deleted when the job ends.
+`wgetrc` that is deleted when the job ends. To use another profile, pass
+`--profile <file>` anywhere in the job's arguments. A `paths:` section left
+in an older profile is ignored (the job says so).
 
-To use a different profile (another data root, another model store, a
-colleague's account), pass `--profile <file>` anywhere in the job's
-arguments; everything else is passed to the job as before:
+Jobs find `jobs/load_profile.sh` via the directory `sbatch` was run from —
+so always submit from the repository base. Each job prints the cluster, the
+profile and the resolved paths at the top of its `.out` file.
 
-```bash
-cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
-sbatch jobs/step3_run_experiment_nibi.sh --profile ~/.config/dt_profile_test.yml config/config_nibi_lean.yaml
-```
+**One-time setup per cluster, before the first `sbatch`** (all scripts
+share this):
 
-The profile always wins over environment variables of the same name (e.g.
-old `export AGENTIC_DT_PRJ=`/`OLLAMA_MODELS=`/`PROJECT=` lines in
-`~/.bashrc`), so a job's settings come from one place. Jobs load it through
-`jobs/load_profile.sh`, which they find via the directory `sbatch` was run
-from — so always submit from the project directory. Each job prints the
-profile it used and the resolved paths at the top of its `.out` file.
-
-Within `paths.project_dir`, the scripts expect:
-
-- `.venv` — the Python virtualenv every script activates
-  (`<project_dir>/.venv/bin/activate`)
-- `src/`, `config/` — this repository's `src/` and `config/` as checked out,
-  unchanged
-
-`paths.ollama_models` is deliberately separate from `project_dir`, so the multi-GB model weights aren't duplicated
-per experiment directory if you ever have more than one.
-
-**One-time setup, before the first `sbatch`** (all scripts share this;
-create your profile first, as above):
-
-1. **Build the Python venv once, on a login node, inside `project_dir`**
-   — compute nodes typically have no internet access, so installing
-   packages has to happen where a network path to PyPI/the Alliance wheel
-   mirror exists:
+1. **Create the repo links and the Python venv, on a login node** —
+   compute nodes may have no internet access:
    ```bash
-   module load python/3.11
-   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1   # your paths.project_dir
-   virtualenv --no-download .venv
-   source .venv/bin/activate
-   pip install --no-index --upgrade pip
-   pip install --no-index -r requirements.txt
-   deactivate
+   cd <where you cloned the repo>     # becomes $DT_REPO
+   bash jobs/setup_bash.sh
    ```
-   If a package isn't available in the Alliance wheel mirror, drop
-   `--no-index` for that one `pip install` only.
+   It creates the `mimic-iv` and `ollama-models` symlinks (and their
+   target directories)
+   and, if `.venv` doesn't exist yet, builds it the Alliance way:
+   `module load $DT_MODULES`, `virtualenv --no-download .venv`,
+   `pip install --no-index -r requirements.txt`. An existing `.venv` is left
+   alone (`rm -rf .venv` first to rebuild). `requirements.txt` lists the
+   modules that are loaded rather than pip-installed. If a package isn't
+   available in the Alliance wheel mirror, drop `--no-index` for that one
+   `pip install` only.
 2. **Download the Ollama models the config needs** (the default model plus
    any `llm.variants` its `conditions` use, creating each `alias`) into
-   `paths.ollama_models` — `jobs/step3_run_experiment_nibi.sh` doesn't pull
+   `$DT_OLLAMA_MODELS` — `jobs/step3_run_experiment_nibi.sh` doesn't pull
    models and aborts with a clear message if one is missing:
    ```bash
    sbatch jobs/prep2_download_models.sh config/config_nibi_lean.yaml
    ```
-3. **Download MIMIC-IV into `<data_root>/mimic-iv/{hosp,icu}`** with
+3. **Download MIMIC-IV into `$DT_MIMIC_DIR/{hosp,icu}`** with
    `sbatch jobs/prep1_download_mimic_nibi.sh` (it uses the PhysioNet
    credentials from your profile), then check it with
-   `sbatch jobs/verify_mimic_nibi.sh`. `config_nibi_*.yaml` resolve
-   `mimic_root`/`work_dir` from `$PROJECT`, which jobs set to your profile's
-   `data_root`. Keep it out of `$HOME` (50GB quota) and prefer `/project`
-   over `$SCRATCH` (purged after 60 days of inactivity). Before
-   downloading, confirm Nibi's storage meets PhysioNet's Data Use Agreement
-   requirements for where credentialed MIMIC-IV data may be stored — that
-   check is on you; the config/job files don't and can't verify it.
+   `sbatch jobs/verify_mimic_nibi.sh`. The configs reach it through the
+   repo's `mimic-iv` link. Keep it out of `$HOME` (50GB quota) and prefer
+   `/project` over `$SCRATCH` (purged after 60 days of inactivity). Before
+   downloading, confirm the cluster's storage meets PhysioNet's Data Use
+   Agreement requirements for where credentialed MIMIC-IV data may be
+   stored — that check is on you; the config/job files don't and can't
+   verify it.
 
 Both `config_nibi_*.yaml` files carry the same header warnings inline;
 read them before your first real submission, not just this section.
@@ -604,10 +582,12 @@ read them before your first real submission, not just this section.
 
 ```
 config/config.yaml                       5-variable panel, 1080 Ti-sized (matches current HREB approval)
-config/config_highend.yaml               same 5-variable panel, sized for bigger local hardware (matches current HREB approval)
-config/config_highend_full_variables.yaml 19-variable panel, same local hardware sizing (NOT yet covered by HREB approval — see above)
-config/config_nibi_lean.yaml             same 5-variable panel, sized for a Nibi Slurm job (matches current HREB approval)
-config/config_nibi_full_variables.yaml   19-variable panel, sized for a Nibi Slurm job (NOT yet covered by HREB approval — see above)
+config/config_nibi_lean.yaml             same 5-variable panel, sized for an Alliance H100 Slurm job (matches current HREB approval)
+config/config_nibi_full_variables.yaml   19-variable panel, sized for an Alliance H100 Slurm job (NOT yet covered by HREB approval — see above)
+config/tuning_grid.yaml                  hyperparameter search grid (jobs/step3b_tune_nibi.sh)
+config/profile.sample.yml                PhysioNet credentials template (prep1 only)
+jobs/setup_bash.sh                       every cluster/user-specific location; run once per cluster
+jobs/run_all.sh lean|full                the whole pipeline as chained Slurm jobs (login node)
 jobs/smoke_test_nibi.sh                  sbatch script — pre-flight smoke test, no GPU/Ollama/real data
 jobs/step1_resolve_items_nibi.sh <cfg>   sbatch script — pipeline step 1, either scope
 jobs/step2_extract_cohort_nibi.sh <cfg>  sbatch script — pipeline step 2, either scope

@@ -34,18 +34,15 @@
 # so this runs as a regular CPU-only job — no GPU needed to download.
 # Single-core and network bound.
 #
-# Settings (project directory, Ollama model store — the same one step 3 reads) come from your profile,
-# ~/.config/dt_profile.yml (see config/profile.sample.yml and README,
-# 'Your profile'). To use another profile, add --profile <file> anywhere
-# in the job's arguments.
+# Paths (repo, MIMIC-IV, Ollama models, modules) come from
+# jobs/setup_bash.sh, picked by cluster.
 # Check free space first — a 70B Q4 model alone is ~43GB — then submit from
-# the project directory:
+# the repository base:
 #   diskusage_report
-#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
 #   sbatch jobs/prep2_download_models.sh                                # config/config_nibi_lean.yaml
 #   sbatch jobs/prep2_download_models.sh config/config_nibi_full_variables.yaml
 # =============================================================================
-#SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-prep2-models
 #SBATCH --cpus-per-task=1
 # --mem: job 23132444 peaked at 3.88 of 3.91 GB while ollama pulled a 27B model
@@ -55,20 +52,18 @@
 
 set -euo pipefail
 
-# Settings come from the profile (~/.config/dt_profile.yml, or --profile
-# <file> among this job's arguments) — see jobs/load_profile.sh. The
-# remaining arguments are this job's own.
+# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-command -v ollama > /dev/null || { echo "== ollama not found in \$HOME/ollama-local/bin (paths.ollama_bin in your profile) — install it per installing_ollama.md ==" >&2; exit 1; }
-PROJECT_DIR="$AGENTIC_DT_PRJ"
-cd "$PROJECT_DIR"
+command -v ollama > /dev/null || { echo "== ollama not found in $DT_OLLAMA_BIN (DT_OLLAMA_BIN, jobs/setup_bash.sh) — install it per installing_ollama.md ==" >&2; exit 1; }
+cd "$DT_REPO"
 
 CONFIG="${1:-config/config_nibi_lean.yaml}"
-[ -f "$CONFIG" ] || { echo "== config '$CONFIG' not found under $PROJECT_DIR ==" >&2; exit 1; }
+[ -f "$CONFIG" ] || { echo "== config '$CONFIG' not found under $DT_REPO ==" >&2; exit 1; }
 
 # A compute node can be shared with other users' jobs, which may run their
 # own ollama on the default 11434 — use a per-job port so we never talk to
@@ -78,10 +73,10 @@ export OLLAMA_HOST="127.0.0.1:${OLLAMA_PORT}"   # read by both `ollama serve` an
 export OLLAMA_MODELS                               # already set by the submitting shell (checked above)
 
 echo "== job ${SLURM_JOB_ID:-local} starting on $(hostname) at $(date) =="
-echo "== account=def-roudsari  user=$(whoami)  config=$CONFIG  OLLAMA_MODELS=$OLLAMA_MODELS =="
+echo "== account=${SLURM_JOB_ACCOUNT:-$DT_ACCOUNT}  user=$(whoami)  config=$CONFIG  OLLAMA_MODELS=$OLLAMA_MODELS =="
 
-module load python/3.11
-source "$PROJECT_DIR/.venv/bin/activate"
+module load $DT_MODULES          # jobs/setup_bash.sh
+source "$DT_REPO/.venv/bin/activate"
 
 # One "model<TAB>alias" line per model the config's run needs (alias empty
 # if none is set).

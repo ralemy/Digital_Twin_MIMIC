@@ -4,7 +4,7 @@
 # OLLAMA_FLASH_ATTENTION=1 vs the current 4 / off, before using them for the
 # long runs (docs/runtime_estimates.md, section 3).
 #
-#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
 #   sbatch jobs/bench_ollama_nibi.sh                       # lean config
 #   sbatch jobs/bench_ollama_nibi.sh config/config_nibi_lean.yaml
 #
@@ -36,7 +36,6 @@
 # Time: ~45-50 min estimated (4 x (~1.5 min startup + 7-11 min forecasting)
 # + probes); the limit is 1 h more than that.
 # =============================================================================
-#SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-bench-ollama
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=12
@@ -47,16 +46,16 @@
 set -uo pipefail     # no -e: one failing setting shouldn't stop the others
 
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-cd "$AGENTIC_DT_PRJ" || exit 1
+cd "$DT_REPO" || exit 1
 CONFIG="${1:-config/config_nibi_lean.yaml}"
 echo "== job ${SLURM_JOB_ID:-local} starting on $(hostname) at $(date) — config=$CONFIG =="
 
-module load python/3.11
-source "$AGENTIC_DT_PRJ/.venv/bin/activate"
+module load $DT_MODULES          # jobs/setup_bash.sh
+source "$DT_REPO/.venv/bin/activate"
 source jobs/ollama_lib.sh
 
 bench() { python src/bench_ollama.py --config-file "$CONFIG" "$@" || echo "== FAILED: bench_ollama.py $* ==" >&2; }

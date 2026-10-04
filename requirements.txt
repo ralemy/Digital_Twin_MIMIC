@@ -1,8 +1,23 @@
 # Top-level packages only; everything else (pandas, numpy, scipy, pyyaml,
 # requests, ...) is pulled in as a dependency. Versions match the Alliance
-# wheelhouse builds in .venv (python/3.11): pip install --no-index -r requirements.txt
+# wheelhouse builds in .venv.
+#
+# Load these modules first — they are NOT pip-installed on Alliance clusters
+# (jobs/setup_bash.sh does this and builds .venv):
+#   module load StdEnv/2023 gcc arrow/25.0.0 python/3.11
+#   virtualenv --no-download .venv && source .venv/bin/activate
+#   pip install --no-index -r requirements.txt
+#
+#   python/3.11   the interpreter (do not pip install python itself)
+#   arrow/25.0.0  provides pyarrow 25.0.0 — the Alliance ships pyarrow only as
+#                 this module, never as a wheel. 25.0.0 is the newest build for
+#                 StdEnv/2023 + python/3.11 (25.0.1 needs StdEnv/2026 and
+#                 python/3.14); tested with numpy 2.4.2 and pandas 3.0.5 below.
+#                 Optional: with it loaded pandas reads/writes parquet with
+#                 pyarrow; without it, with fastparquet.
+#   gcc           arrow's compiler toolchain (gcc/12.3 in StdEnv/2023)
 duckdb==1.5.3
-fastparquet==2025.12.0   # parquet engine for pandas; also brings pandas + numpy
+fastparquet==2025.12.0   # parquet engine when the arrow module isn't loaded; also brings pandas + numpy
 scikit-learn==1.8.0      # also brings scipy, numpy
 torch==2.14.0
 wandb==0.27.2            # optional live metrics; also brings pyyaml, requests

@@ -1,46 +1,26 @@
 # =============================================================================
-# Personal profile for the jobs in jobs/ — a SAMPLE. Every job reads its
-# settings from your copy of this file instead of from environment variables.
+# Personal profile for the jobs in jobs/ — a SAMPLE. It holds only your
+# PhysioNet credentials, which only jobs/prep1_download_mimic_nibi.sh uses.
+# Paths (repo, MIMIC-IV, Ollama models, modules) are NOT set here: they come
+# from jobs/setup_bash.sh, per cluster.
 #
-# Set up once:
+# Set up once (only if you will download MIMIC-IV with prep1):
 #   cp config/profile.sample.yml ~/.config/dt_profile.yml
 #   chmod 600 ~/.config/dt_profile.yml      # it holds your PhysioNet password
 #   # then edit ~/.config/dt_profile.yml
 #
 # Jobs read ~/.config/dt_profile.yml by default; to use another file, pass
 # --profile <file> among the job's arguments:
-#   sbatch jobs/step1_resolve_items_nibi.sh --profile ~/.config/other.yml config/config_nibi_lean.yaml
+#   sbatch jobs/prep1_download_mimic_nibi.sh --profile ~/.config/other.yml
 #
 # Keep your copy private: never commit it, never put it in the repo or in
 # /project (shared with the group). Jobs refuse a profile that holds a
 # password but is readable by anyone else (fix with chmod 600).
-#
-# Paths may use ~ and $VARS (e.g. $HOME, $SCRATCH); they're expanded when a
-# job reads the file.
 # =============================================================================
 
-paths:
-  # This repo (where .venv, src/ and config/ live). Optional — defaults to
-  # the repo the job was submitted from.
-  project_dir: ~/projects/def-roudsari/digital_twin/exp1
-
-  # Where the data and results live. config/config_nibi_*.yaml build their
-  # paths from it as $PROJECT (mimic_root: $PROJECT/mimic-iv, work_dir:
-  # $PROJECT/mimic-iv-twin-work, ...), and prep1 downloads MIMIC-IV into
-  # <data_root>/mimic-iv. Optional — defaults to project_dir.
-  data_root: ~/projects/def-roudsari/digital_twin/exp1
-
-  # Ollama model store, shared by prep2 (download), prep3 (Med42 test) and
-  # step 3 (experiment). Needs ~100GB+ free for the 70B models. Scratch is
-  # purged after a period of inactivity; re-run prep2 if models go missing.
-  ollama_models: ~/projects/def-roudsari/ollama-local/models
-
-  # Directory holding the ollama binary (see installing_ollama.md).
-  ollama_bin: ~/ollama-local/bin
-
-# Only prep1_download_mimic_nibi.sh uses these. Your PhysioNet account must
-# be credentialed for MIMIC-IV. The password never leaves this file except
-# into a private, temporary wgetrc inside the download job.
+# Your PhysioNet account must be credentialed for MIMIC-IV. The password
+# never leaves this file except into a private, temporary wgetrc inside the
+# download job.
 physionet:
   username: ""
   password: ""

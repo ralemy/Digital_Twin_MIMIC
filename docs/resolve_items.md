@@ -6,8 +6,13 @@ in the order it calls them. Every example uses real values from
 `config/config_nibi_lean.yaml` and the MIMIC-IV 3.1 files on Nibi, where
 
 ```
-$PROJECT = /home/ralemy/projects/def-roudsari/digital_twin/exp1
+$DT_REPO        = where the repo is cloned
+$DT_MIMIC_DIR   = where MIMIC-IV is downloaded (the repo's mimic-iv symlink)
+$DT_RESULTS_DIR = where results are recorded
 ```
+
+(all three set per cluster in `jobs/setup_bash.sh`; on Nibi `$DT_RESULTS_DIR`
+is the repo itself).
 
 The MIMIC-IV dictionary tables quoted here (`d_items`, `d_labitems`) describe
 *what can be measured*. They contain no patient data.
@@ -91,7 +96,7 @@ itemid,label,fluid,category
 
 ### Example output
 
-Three entries of `mimic-iv-twin-work/cache/item_mapping.json` (lactate
+Three entries of `$DT_RESULTS_DIR/mimic-iv-twin-work/cache/item_mapping.json` (lactate
 trimmed to its first match):
 
 ```json
@@ -130,7 +135,7 @@ And the log lines:
 [resolve_items] INFO: Resolved 'spo2' -> 1 itemid(s): [220277]
 [resolve_items] INFO: Resolved 'map' -> 3 itemid(s): [220052, 220181, 225312]
 [resolve_items] INFO: Resolved 'lactate' -> 3 itemid(s): [50813, 52442, 53154]
-[resolve_items] INFO: Wrote item mapping to .../mimic-iv-twin-work/cache/item_mapping.json — REVIEW THIS FILE before running extraction.
+[resolve_items] INFO: Wrote item mapping to $DT_RESULTS_DIR/mimic-iv-twin-work/cache/item_mapping.json — REVIEW THIS FILE before running extraction.
 ```
 
 > **Always review the output.** Step 2 extracts every itemid in this file
@@ -193,10 +198,10 @@ the two dictionary files, resolve every variable, write the JSON.
 
    ```python
    cfg["paths"] = {
-       "mimic_root":  "/home/ralemy/projects/def-roudsari/digital_twin/exp1/mimic-iv",
-       "work_dir":    "/home/ralemy/projects/def-roudsari/digital_twin/exp1/mimic-iv-twin-work",
-       "cache_dir":   "/home/ralemy/projects/def-roudsari/digital_twin/exp1/mimic-iv-twin-work/cache",
-       "results_dir": "/home/ralemy/projects/def-roudsari/digital_twin/exp1/mimic-iv-twin-work/results",
+       "mimic_root":  "$DT_REPO/mimic-iv",          # symlink -> $DT_MIMIC_DIR
+       "work_dir":    "$DT_RESULTS_DIR/mimic-iv-twin-work",
+       "cache_dir":   "$DT_RESULTS_DIR/mimic-iv-twin-work/cache",
+       "results_dir": "$DT_RESULTS_DIR/mimic-iv-twin-work/results",
    }
    cfg["performance"] = {"duckdb_threads": 10, "duckdb_memory_limit_gb": 120, ...}
    cfg["variables"]   = [ {"name": "heart_rate", "source": "icu_chartevents",
@@ -215,14 +220,14 @@ the two dictionary files, resolve every variable, write the JSON.
    it:
 
    ```python
-   d_items_path = Path(".../exp1/mimic-iv/icu/d_items.csv.gz")
+   d_items_path = Path("$DT_REPO/mimic-iv/icu/d_items.csv.gz")
    ```
 
 5. **Find the lab dictionary.** The same with `hosp_dir(cfg)` [see below] and
    `d_labitems`:
 
    ```python
-   d_labitems_path = Path(".../exp1/mimic-iv/hosp/d_labitems.csv.gz")
+   d_labitems_path = Path("$DT_REPO/mimic-iv/hosp/d_labitems.csv.gz")
    ```
 
 6. **Open DuckDB.** `con = get_duckdb_connection(cfg)` [see below] returns an
@@ -276,7 +281,7 @@ the two dictionary files, resolve every variable, write the JSON.
    "REVIEW THIS FILE" line is logged.
 
    ```
-   out_path = .../exp1/mimic-iv-twin-work/cache/item_mapping.json
+   out_path = $DT_RESULTS_DIR/mimic-iv-twin-work/cache/item_mapping.json
    ```
 
 ---
@@ -325,16 +330,18 @@ usable.
 
 1. Parses the YAML file with `yaml.safe_load`.
 2. For **every** entry under `paths`, expands environment variables first
-   (`$PROJECT`, `$SCRATCH`, …) and then `~`, and normalizes the result:
+   (`$DT_RESULTS_DIR`, set by `jobs/setup_bash.sh`) and then `~`; a path
+   that is still relative is taken relative to the repository base, not the
+   current directory:
 
    ```
-   in  : mimic_root: "$PROJECT/mimic-iv"
-   with: PROJECT=/home/ralemy/projects/def-roudsari/digital_twin/exp1/
-   out : "/home/ralemy/projects/def-roudsari/digital_twin/exp1/mimic-iv"
+   in  : mimic_root: "mimic-iv"            work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work"
+   out : "$DT_REPO/mimic-iv"              "$DT_RESULTS_DIR/mimic-iv-twin-work" (expanded)
    ```
 
-   An unset variable is left as literal text (`"$PROJECT/mimic-iv"`), which
-   then fails later in `require_mimic_layout()`.
+   A variable that isn't set (the shell never sourced `jobs/setup_bash.sh`)
+   stops it right away: `ValueError: paths.work_dir in config/config_nibi_lean.yaml
+   uses an unset variable ... — run `source jobs/setup_bash.sh` first`.
 3. If the config has no `performance` section (older configs), it fills in
    defaults: all CPU cores for DuckDB, an 8 GB DuckDB memory limit, one
    concurrent LLM request, and no batched baseline prediction.
@@ -351,9 +358,9 @@ already exists it does nothing.
 
 ```
 creates (if missing):
-  .../exp1/mimic-iv-twin-work
-  .../exp1/mimic-iv-twin-work/cache
-  .../exp1/mimic-iv-twin-work/results
+  $DT_RESULTS_DIR/mimic-iv-twin-work
+  $DT_RESULTS_DIR/mimic-iv-twin-work/cache
+  $DT_RESULTS_DIR/mimic-iv-twin-work/results
 ```
 
 Returns nothing.
@@ -367,14 +374,14 @@ says. It builds the two module folders with `hosp_dir(cfg)` and `icu_dir(cfg)`
 [see below] and raises `FileNotFoundError` listing whichever is missing:
 
 ```
-checks: .../exp1/mimic-iv/hosp   ✓
-        .../exp1/mimic-iv/icu    ✓
+checks: $DT_REPO/mimic-iv/hosp   ✓     (mimic-iv -> $DT_MIMIC_DIR)
+        $DT_REPO/mimic-iv/icu    ✓
 → returns None
 
-if $PROJECT were unset:
+if the mimic-iv symlink were missing (bash jobs/setup_bash.sh never run):
 FileNotFoundError: Expected MIMIC-IV 'hosp' and 'icu' module folders not found:
-['$PROJECT/mimic-iv/hosp', '$PROJECT/mimic-iv/icu']. This project assumes the raw
-PhysioNet export is placed at $PROJECT/mimic-iv/hosp and $PROJECT/mimic-iv/icu ...
+['$DT_REPO/mimic-iv/hosp', '$DT_REPO/mimic-iv/icu']. This project assumes the raw
+PhysioNet export is placed at $DT_REPO/mimic-iv/hosp and $DT_REPO/mimic-iv/icu ...
 ```
 
 It only checks the folders exist, not which files are inside them. That is
@@ -388,8 +395,8 @@ It only checks the folders exist, not which files are inside them. That is
 a `Path`.
 
 ```python
-icu_dir(cfg)  → Path(".../exp1/mimic-iv/icu")
-hosp_dir(cfg) → Path(".../exp1/mimic-iv/hosp")
+icu_dir(cfg)  → Path("$DT_REPO/mimic-iv/icu")
+hosp_dir(cfg) → Path("$DT_REPO/mimic-iv/hosp")
 ```
 
 ---
@@ -401,16 +408,16 @@ downloaded compressed or not. It tries `<stem>.csv.gz` first, then
 `<stem>.csv`, and returns the first that exists.
 
 ```python
-_find_file(Path(".../mimic-iv/icu"), "d_items")
-  tries .../mimic-iv/icu/d_items.csv.gz   → exists
-  → Path(".../mimic-iv/icu/d_items.csv.gz")
+_find_file(Path("$DT_REPO/mimic-iv/icu"), "d_items")
+  tries $DT_REPO/mimic-iv/icu/d_items.csv.gz   → exists
+  → Path("$DT_REPO/mimic-iv/icu/d_items.csv.gz")
 
-_find_file(Path(".../mimic-iv/hosp"), "d_labitems")
-  → Path(".../mimic-iv/hosp/d_labitems.csv.gz")
+_find_file(Path("$DT_REPO/mimic-iv/hosp"), "d_labitems")
+  → Path("$DT_REPO/mimic-iv/hosp/d_labitems.csv.gz")
 ```
 
 If neither exists: `FileNotFoundError: Could not find d_items.csv or
-d_items.csv.gz under .../mimic-iv/icu`.
+d_items.csv.gz under $DT_REPO/mimic-iv/icu`.
 
 `extract_cohort.py` has an identical copy of this function.
 
@@ -460,7 +467,7 @@ contains any of `excludes`.
    ```
 
    ```python
-   params = [".../mimic-iv/icu/d_items.csv.gz",
+   params = ["$DT_REPO/mimic-iv/icu/d_items.csv.gz",
              "Arterial Blood Pressure mean",
              "Non Invasive Blood Pressure mean",
              "ART BP Mean"]

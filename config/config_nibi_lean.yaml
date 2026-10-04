@@ -1,17 +1,17 @@
 # =============================================================================
-# Same 5-variable panel as config.yaml / config_highend.yaml — the version
+# Same 5-variable panel as config.yaml — the version
 # already described to UVic's HREB — sized to run as a Slurm batch job on
-# Nibi (Digital Research Alliance of Canada), one H100 80GB GPU allocation,
-# instead of on a local machine. Paired with jobs/run_lean_nibi.sh.
+# an Alliance cluster (Nibi, Rorqual), one H100 80GB GPU per job, instead
+# of on a local machine. Run with jobs/run_all.sh lean.
 #
-# Differences from config_highend.yaml are ONLY: paths (use $PROJECT/$SCRATCH,
-# which only exist inside an Alliance job/login environment — this file will
-# NOT load correctly outside one) and performance.duckdb_threads /
-# llm_max_concurrent_requests (capped to Nibi's documented "no more than 14
-# CPU cores per GPU" guideline, not the 24-core local machine's number).
-# Nothing about the model, cohort criteria, variable panel, or conditions
-# differs from config_highend.yaml — this is the same experiment, same
-# scope already represented to the Board, on different infrastructure.
+# Same variable panel and cohort criteria as config.yaml (the 1080 Ti
+# local config); only the sizing differs, to use the H100: a larger cohort
+# (max_patients 3000 vs 300), a stronger local model (qwen2.5:32b vs
+# llama3.1:8b) plus the comparison models under llm.variants, concurrent
+# LLM requests, a bigger LSTM baseline, checkpointing, and DuckDB/CPU
+# numbers capped to Nibi's documented "no more than 14 CPU cores per GPU"
+# guideline. No new variables and no cloud/API calls — the same experiment
+# and scope already represented to the Board, on different infrastructure.
 #
 # IMPORTANT — read before submitting a job with this file:
 #   1. MIMIC-IV DUA / data custody: confirm that Nibi's storage meets
@@ -26,19 +26,20 @@
 #      account session, and raise these if a full node's worth is actually
 #      available to a single-GPU job.
 #   3. Ollama itself must already be running on 127.0.0.1:11434 before the
-#      Python steps run — jobs/run_lean_nibi.sh starts it. This config does
-#      not start Ollama; it only talks to it.
+#      Python steps run — the GPU jobs start it (jobs/ollama_lib.sh).
+#      This config does not start Ollama; it only talks to it.
 # =============================================================================
 
 paths:
-  # $PROJECT persists (unlike $SCRATCH, purged after 60 days of inactivity)
-  # — appropriate for MIMIC-IV itself and for results you need to keep for
-  # the dissertation. Update mimic_root if you placed the data somewhere
-  # else under your project space.
-  mimic_root: "$PROJECT/mimic-iv"
-  work_dir: "$PROJECT/mimic-iv-twin-work"
-  cache_dir: "$PROJECT/mimic-iv-twin-work/cache"
-  results_dir: "$PROJECT/mimic-iv-twin-work/results"
+  # mimic-iv is the repo's symlink to $DT_MIMIC_DIR; $DT_RESULTS_DIR is where
+  # results are recorded. Both are set per cluster in jobs/setup_bash.sh —
+  # change locations there, not here. Keep results on project space, not
+  # scratch (purged after 60 days of inactivity): they are needed for the
+  # dissertation.
+  mimic_root: "mimic-iv"
+  work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work"
+  cache_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work/cache"
+  results_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work/results"
 
 performance:
   # Nibi's own guidance is "no more than 14 CPU cores" per GPU requested —
@@ -69,7 +70,7 @@ cohort:
   val_frac: 0.15
   test_frac: 0.15
   random_seed: 42
-  max_patients: 3000               # same starting point as config_highend.yaml; set to null once timed
+  max_patients: 3000               # set to null once timed
 
 variables:
   - name: heart_rate
@@ -110,7 +111,7 @@ deterioration_labels:
 llm:
   backend: "ollama"
   ollama_host: "http://127.0.0.1:11434"
-  model: "qwen2.5:32b-instruct-q8_0"   # ~34GB weights — comfortable on an 80GB H100, same model as config_highend.yaml
+  model: "qwen2.5:32b-instruct-q8_0"   # ~34GB weights — comfortable on an 80GB H100, a much stronger model than config.yaml's 8B
   alias: "qwen2.5:32b"                     # optional short name for the model, used in results and pre-flight checks
   # Optional `alias`, here or in any variant: a short local name for `model`,
   # created once on a login node with `ollama cp <model> <alias>`. When set,

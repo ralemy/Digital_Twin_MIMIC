@@ -1,5 +1,0 @@
-Looking in links: /cvmfs/soft.computecanada.ca/custom/python/wheelhouse/gentoo2023/x86-64-v4, /cvmfs/soft.computecanada.ca/custom/python/wheelhouse/gentoo2023/x86-64-v3, /cvmfs/soft.computecanada.ca/custom/python/wheelhouse/gentoo2023/generic, /cvmfs/soft.computecanada.ca/custom/python/wheelhouse/generic
-Processing /cvmfs/soft.computecanada.ca/custom/python/wheelhouse/gentoo2023/generic/scipy-1.17.1+computecanada-cp311-cp311-linux_x86_64.whl
-Requirement already satisfied: numpy<2.7,>=1.26.4 in /home/ralemy/projects/def-roudsari/digital_twin/exp1/.venv/lib/python3.11/site-packages (from scipy) (2.4.2+computecanada)
-Installing collected packages: scipy
-Successfully installed scipy-1.17.1+computecanada

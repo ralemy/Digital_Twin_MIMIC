@@ -6,8 +6,13 @@ in the order it calls them. Configuration values come from
 `config/config_nibi_lean.yaml` on Nibi, where
 
 ```
-$PROJECT = /home/ralemy/projects/def-roudsari/digital_twin/exp1
+$DT_REPO        = where the repo is cloned
+$DT_MIMIC_DIR   = where MIMIC-IV is downloaded (the repo's mimic-iv symlink)
+$DT_RESULTS_DIR = where results are recorded
 ```
+
+(all three set per cluster in `jobs/setup_bash.sh`; on Nibi `$DT_RESULTS_DIR`
+is the repo itself).
 
 > **About the sample rows.** Every patient-level row on this page
 > (`subject_id`, `stay_id`, timestamps, measured values) is **invented** for
@@ -146,7 +151,7 @@ current rule the count will be somewhat higher.
 [extract_cohort] INFO: Stays passing 50% panel-coverage threshold: N / 31487     (N not yet known)
 [extract_cohort] INFO: Subsampled cohort to max_patients=3000 for this run.
 [extract_cohort] INFO: Split sizes: {'train': 2100, 'val': 450, 'test': 450}
-[extract_cohort] INFO: Cohort extraction complete: 3000 stays, ... panel rows. Written to .../mimic-iv-twin-work
+[extract_cohort] INFO: Cohort extraction complete: 3000 stays, ... panel rows. Written to $DT_RESULTS_DIR/mimic-iv-twin-work
 ```
 
 ---
@@ -188,14 +193,15 @@ write the two output files.
 
 1. **Load the config.** `cfg = load_config(config_path)` (see
    [resolve_items.md](resolve_items.md#load_configconfig_path--srccommonpy))
-   returns a plain dict with every `$PROJECT` / `~` in `paths` expanded:
+   returns a plain dict with every path resolved (`$DT_RESULTS_DIR` expanded,
+   `mimic-iv` taken relative to the repository base):
 
    ```python
    cfg["paths"] = {
-       "mimic_root":  ".../exp1/mimic-iv",
-       "work_dir":    ".../exp1/mimic-iv-twin-work",
-       "cache_dir":   ".../exp1/mimic-iv-twin-work/cache",
-       "results_dir": ".../exp1/mimic-iv-twin-work/results",
+       "mimic_root":  "$DT_REPO/mimic-iv",          # symlink -> $DT_MIMIC_DIR
+       "work_dir":    "$DT_RESULTS_DIR/mimic-iv-twin-work",
+       "cache_dir":   "$DT_RESULTS_DIR/mimic-iv-twin-work/cache",
+       "results_dir": "$DT_RESULTS_DIR/mimic-iv-twin-work/results",
    }
    cfg["cohort"]    = {"min_age_years": 18, "min_icu_stay_hours": 48, ..., "max_patients": 3000}
    cfg["variables"] = [{"name": "heart_rate", ...}, ...]   # 5 entries
@@ -210,7 +216,7 @@ write the two output files.
 4. **Load the item mapping from step 1.**
 
    ```python
-   mapping_path = Path(".../mimic-iv-twin-work/cache/item_mapping.json")
+   mapping_path = Path("$DT_RESULTS_DIR/mimic-iv-twin-work/cache/item_mapping.json")
    ```
 
    If the file is missing it raises `FileNotFoundError("... run
@@ -276,8 +282,8 @@ write the two output files.
 13. **Write outputs.** Both DataFrames are written without the pandas index:
 
     ```
-    .../mimic-iv-twin-work/cohort.parquet
-    .../mimic-iv-twin-work/panel_long.parquet
+    $DT_RESULTS_DIR/mimic-iv-twin-work/cohort.parquet
+    $DT_RESULTS_DIR/mimic-iv-twin-work/panel_long.parquet
     ```
 
     and the "Cohort extraction complete" line is logged.
@@ -292,9 +298,9 @@ and age criteria and returns the surviving stays as a DataFrame.
 1. **Find the three input files** with `_find_file()` [see below]:
 
    ```python
-   icustays_path   = Path(".../mimic-iv/icu/icustays.csv.gz")
-   patients_path   = Path(".../mimic-iv/hosp/patients.csv.gz")
-   admissions_path = Path(".../mimic-iv/hosp/admissions.csv.gz")
+   icustays_path   = Path("$DT_REPO/mimic-iv/icu/icustays.csv.gz")
+   patients_path   = Path("$DT_REPO/mimic-iv/hosp/patients.csv.gz")
+   admissions_path = Path("$DT_REPO/mimic-iv/hosp/admissions.csv.gz")
    ```
 
 2. **Build the first-stay clause.** With `first_stay_only: true`,
@@ -366,11 +372,11 @@ and returns the first that exists. If neither does, it raises
 `FileNotFoundError`.
 
 ```python
-_find_file(Path(".../mimic-iv/icu"), "icustays")
-# → Path(".../mimic-iv/icu/icustays.csv.gz")
+_find_file(Path("$DT_REPO/mimic-iv/icu"), "icustays")
+# → Path("$DT_REPO/mimic-iv/icu/icustays.csv.gz")
 
-_find_file(Path(".../mimic-iv/icu"), "nope")
-# → FileNotFoundError: Could not find nope.csv or nope.csv.gz under .../mimic-iv/icu
+_find_file(Path("$DT_REPO/mimic-iv/icu"), "nope")
+# → FileNotFoundError: Could not find nope.csv or nope.csv.gz under $DT_REPO/mimic-iv/icu
 ```
 
 It only checks that the file exists. A truncated or corrupted `.csv.gz`
@@ -409,7 +415,7 @@ the result to parquet. If a cache file already exists, that scan is skipped.
    ```
 
 4. **chartevents** (only if `chart_itemids` is non-empty):
-   - Finds `.../mimic-iv/icu/chartevents.csv.gz` with `_find_file()`.
+   - Finds `$DT_REPO/mimic-iv/icu/chartevents.csv.gz` with `_find_file()`.
    - If `chart_out` already exists, logs `Reusing cached ...` and moves on.
    - Otherwise registers the itemids as table `chart_itemids_df` and runs a
      `COPY (SELECT ...) TO '<chart_out>' (FORMAT PARQUET)`, which streams the

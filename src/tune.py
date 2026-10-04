@@ -190,7 +190,7 @@ def tuned_config_path(config_path: str) -> Path:
 
 
 def write_tuned_config(config_path: str, grid_path: str, overrides: dict, grid: dict) -> Path:
-    """The base config file (unexpanded, so $PROJECT etc. still resolve per
+    """The base config file (unexpanded, so $DT_RESULTS_DIR etc. still resolve per
     environment) with the winning overrides, writing to its own results and
     checkpoint directories so the untuned run's outputs are kept."""
     raw = yaml.safe_load(Path(config_path).read_text())

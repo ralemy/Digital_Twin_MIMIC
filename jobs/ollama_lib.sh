@@ -2,7 +2,7 @@
 # =============================================================================
 # Ollama helpers shared by GPU jobs — SOURCED, not submitted.
 #
-#   source "$AGENTIC_DT_PRJ/jobs/ollama_lib.sh"
+#   source "$DT_REPO/jobs/ollama_lib.sh"
 #   start_ollama "$CONFIG" [tag]      # per-job port, stopped when the job exits;
 #                                     # log: ollama-<job id>[-<tag>].log
 #   stop_ollama                       # stop it early (e.g. to restart with other settings)
@@ -19,7 +19,7 @@
 #   OLLAMA_FLASH_ATTENTION  = performance.ollama_flash_attention (default off)
 # so the request slots always match the requests the pipeline sends at once.
 # A benchmark can override both: start_ollama "$CONFIG" <tag> <parallel> <0|1>.
-# Needs the venv's python (PyYAML) and the profile's $PROJECT.
+# Needs the venv's python (PyYAML) and OLLAMA_MODELS (jobs/setup_bash.sh).
 # =============================================================================
 
 start_ollama() {

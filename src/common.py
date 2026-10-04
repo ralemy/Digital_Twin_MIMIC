@@ -14,6 +14,9 @@ from typing import Callable
 import yaml
 
 DEFAULT_CONFIG_PATH = "config/config.yaml"
+# The repository base: relative paths in a config (e.g. the mimic-iv link) are
+# relative to it, not to the current directory.
+REPO_DIR = Path(__file__).resolve().parents[1]
 
 
 def parse_step_args(
@@ -43,14 +46,16 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
 
-    # Expand ~ and $ENV_VARS (e.g. $PROJECT, $SCRATCH on an HPC cluster) in
-    # every path entry. Plain ~-expansion was enough for the original single
-    # local-machine setup; the Nibi configs (config_nibi_lean.yaml,
-    # config_nibi_full_variables.yaml) rely on $PROJECT/$SCRATCH, which
-    # Alliance Canada sets in the job environment, so this needs to run
-    # before expanduser() for those to resolve correctly.
+    # Every path entry: expand $ENV_VARS (e.g. $DT_RESULTS_DIR, set by
+    # jobs/setup_bash.sh) and ~, then make a relative path relative to the
+    # repository base — e.g. "mimic-iv" is the repo's mimic-iv link.
     for key, val in cfg["paths"].items():
-        cfg["paths"][key] = str(Path(os.path.expandvars(val)).expanduser())
+        expanded = os.path.expandvars(val)
+        if "$" in expanded:
+            raise ValueError(f"paths.{key} in {config_path} uses an unset variable ({val!r}) — "
+                             "run `source jobs/setup_bash.sh` first")
+        path = Path(expanded).expanduser()
+        cfg["paths"][key] = str(path if path.is_absolute() else REPO_DIR / path)
 
     # Backward-compatible default so configs written before the `performance`
     # section was added (e.g. the original 1080 Ti / 32 GB profile) still load.
@@ -236,7 +241,7 @@ def vasopressor_cache_path(cfg: dict) -> Path:
 
 
 def require_mimic_layout(cfg: dict) -> None:
-    """Fail fast with a clear message if ~/mimic-iv doesn't look right."""
+    """Fail fast with a clear message if mimic_root doesn't look right."""
     h, i = hosp_dir(cfg), icu_dir(cfg)
     missing = [str(p) for p in (h, i) if not p.exists()]
     if missing:
@@ -244,5 +249,7 @@ def require_mimic_layout(cfg: dict) -> None:
             "Expected MIMIC-IV 'hosp' and 'icu' module folders not found: "
             f"{missing}. This project assumes the raw PhysioNet export is placed at "
             f"{cfg['paths']['mimic_root']}/hosp and {cfg['paths']['mimic_root']}/icu "
-            "(the standard MIMIC-IV directory layout, files may be .csv or .csv.gz)."
+            "(the standard MIMIC-IV directory layout, files may be .csv or .csv.gz). "
+            "mimic_root is normally the repo's mimic-iv link: check DT_MIMIC_DIR in "
+            "jobs/setup_bash.sh and run `bash jobs/setup_bash.sh`."
         )

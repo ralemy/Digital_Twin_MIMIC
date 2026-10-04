@@ -10,15 +10,12 @@
 # PhysioNet (delete it first rather than resuming the partial file).
 #
 #
-# Settings (project directory, data_root) come from your profile,
-# ~/.config/dt_profile.yml (see config/profile.sample.yml and README,
-# 'Your profile'). To use another profile, add --profile <file> anywhere
-# in the job's arguments. Submit from the project directory:
-#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+# Paths (repo, MIMIC-IV, Ollama models, modules) come from
+# jobs/setup_bash.sh, picked by cluster. Submit from the repository base:
+#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
 #   sbatch jobs/verify_mimic_nibi.sh [path/to/mimic-iv]
-# The MIMIC-IV directory defaults to <data_root>/mimic-iv if omitted.
+# The MIMIC-IV directory defaults to $DT_MIMIC_DIR (jobs/setup_bash.sh) if omitted.
 # =============================================================================
-#SBATCH --account=def-roudsari
 #SBATCH --job-name=mimic-twin-verify-data
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1000M
@@ -27,19 +24,18 @@
 
 set -euo pipefail
 
-# Settings come from the profile (~/.config/dt_profile.yml, or --profile
-# <file> among this job's arguments) — see jobs/load_profile.sh. The
-# remaining arguments are this job's own.
+# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-MIMIC_DIR="${1:-$PROJECT/mimic-iv}"
+MIMIC_DIR="${1:-$DT_MIMIC_DIR}"
 cd "$MIMIC_DIR"
 
 echo "== job $SLURM_JOB_ID starting on $(hostname) at $(date) =="
-echo "== account=def-roudsari  user=$(whoami)  mimic_dir=$MIMIC_DIR =="
+echo "== account=${SLURM_JOB_ACCOUNT:-$DT_ACCOUNT}  user=$(whoami)  mimic_dir=$MIMIC_DIR =="
 
 # --ignore-missing: only check the files actually downloaded (hosp/ and icu/
 # here; SHA256SUMS.txt also lists files this project doesn't use).

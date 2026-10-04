@@ -3,21 +3,18 @@
 # Slurm batch job — one-off check that Med42-70B loads and answers on a GPU
 # node via Ollama, before wiring it into the experiment config.
 #
-# Settings (Ollama model store) come from your profile,
-# ~/.config/dt_profile.yml (see config/profile.sample.yml and README,
-# 'Your profile'). To use another profile, add --profile <file> anywhere
-# in the job's arguments.
+# Paths (repo, MIMIC-IV, Ollama models, modules) come from
+# jobs/setup_bash.sh, picked by cluster.
 #
 # Download the model and create its med42:70b alias first: enable the
 # llama_Med42_70b conditions in the config, then
 #   sbatch jobs/prep2_download_models.sh config/config_nibi_lean.yaml
 #
-# Then, from the project directory:
-#   cd /home/ralemy/projects/def-roudsari/digital_twin/exp1
+# Then, from the repository base:
+#   cd "$DT_REPO"     # with jobs/setup_bash.sh sourced (sets DT_REPO, SBATCH_ACCOUNT)
 #   sbatch jobs/prep3_med42_nibi.sh                # tests med42:70b
 #   sbatch jobs/prep3_med42_nibi.sh <model-name>   # tests another pulled model
 # =============================================================================
-#SBATCH --account=def-roudsari
 #SBATCH --job-name=test-med42
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=4
@@ -27,15 +24,14 @@
 
 set -euo pipefail
 
-# Settings come from the profile (~/.config/dt_profile.yml, or --profile
-# <file> among this job's arguments) — see jobs/load_profile.sh. The
-# remaining arguments are this job's own.
+# Paths come from jobs/setup_bash.sh, through jobs/load_profile.sh; the
+# job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the project directory: cd <project> && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
-command -v ollama > /dev/null || { echo "== ollama not found in \$HOME/ollama-local/bin (paths.ollama_bin in your profile) — install it per installing_ollama.md ==" >&2; exit 1; }
+command -v ollama > /dev/null || { echo "== ollama not found in $DT_OLLAMA_BIN (DT_OLLAMA_BIN, jobs/setup_bash.sh) — install it per installing_ollama.md ==" >&2; exit 1; }
 
 MODEL="${1:-med42:70b}"
 OLLAMA_PORT=11434
