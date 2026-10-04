@@ -114,6 +114,10 @@ def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids) -> dic
         # variable only; before, the whole forecast fell back. Predictions
         # made under the old rule must not be reused.
         fp["missing_variable"] = "naive_fill"
+        # Forecasts and critic corrections are now decoded under a JSON
+        # schema fixing each list's length (format=json before), which
+        # changes the generations: don't reuse the old ones.
+        fp["output_format"] = "json_schema_v1"
         # A critic on another model (llm.variants.<v>.critic_variant): its
         # model's settings shape the corrected forecasts too.
         cv = fp["llm"].get("critic_variant")

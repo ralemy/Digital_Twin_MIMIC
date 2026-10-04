@@ -112,7 +112,10 @@ class CriticAgent:
             "Return corrected_values as JSON."
         )
         try:
-            raw = self.llm.generate(prompt, system=CORRECTION_SYSTEM_PROMPT, json_mode=True)
+            schema = {"type": "object", "required": ["corrected_values"],
+                      "properties": {"corrected_values": {"type": "array", "items": {"type": "number"},
+                                                          "minItems": len(values), "maxItems": len(values)}}}
+            raw = self.llm.generate(prompt, system=CORRECTION_SYSTEM_PROMPT, json_mode=True, schema=schema)
             parsed = extract_json_block(raw)
             fixed = np.array(parsed["corrected_values"], dtype=float)
             if len(fixed) != len(values):

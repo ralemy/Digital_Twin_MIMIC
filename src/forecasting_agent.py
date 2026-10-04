@@ -10,7 +10,8 @@ Two call modes:
 The prompt asks the model to return a strict JSON object mapping each
 variable to a list of hourly forecast values plus a symmetric plausible
 interval, which is what the critic agent and the evaluation metrics both
-consume. If the model's output can't be parsed as JSON, a naive
+consume. The same shape is passed to Ollama as a JSON schema, so decoding
+itself is held to exactly forecast_horizon_hours values per variable. If the model's output can't be parsed as JSON, a naive
 last-value-carried-forward forecast is substituted and the failure is logged
 — this keeps a single malformed generation from crashing an entire run.
 If the output is valid but leaves out some of the variables (typically a
@@ -123,6 +124,31 @@ def _format_similarity_trajectory(ctx: dict, variables: list[str], units: dict[s
             "own data are sparse:\n" + "\n".join(lines))
 
 
+def forecast_schema(variables: list[str], horizon_hours: int) -> dict:
+    """JSON schema for the forecast, passed to Ollama as `format` so decoding
+    is constrained to exactly horizon_hours values per variable. With plain
+    JSON mode, Qwen2.5-32B often ran on to 30-31 values (job 23206117: 118
+    of 128 forecasts under similarity_context=trajectory fell back)."""
+    return {
+        "type": "object",
+        "properties": {
+            "forecast": {
+                "type": "object",
+                "properties": {var: {"type": "array", "items": {"type": "number"},
+                                     "minItems": horizon_hours, "maxItems": horizon_hours}
+                               for var in variables},
+                "required": list(variables),
+            },
+            "interval_halfwidth": {
+                "type": "object",
+                "properties": {var: {"type": "number"} for var in variables},
+                "required": list(variables),
+            },
+        },
+        "required": ["forecast", "interval_halfwidth"],
+    }
+
+
 class ForecastingAgent:
     def __init__(self, llm: LocalLLM, cfg: dict):
         self.llm = llm
@@ -141,6 +167,7 @@ class ForecastingAgent:
         self.similarity_context = fa.get("similarity_context", "horizon_mean")
         self.strict_length = bool(fa.get("strict_length", False))
         self.recent_hours = int(fa.get("recent_hours", 0))
+        self.schema = forecast_schema(self.variables, self.horizon_hours)
         # How many forecast() calls fell back to the naive forecast. Reported
         # per condition: a model that often fails to produce valid JSON would
         # otherwise just look like the naive baseline. Locked because
@@ -197,7 +224,7 @@ class ForecastingAgent:
 
         raw = parsed = None
         try:
-            raw = self.llm.generate(prompt, system=SYSTEM_PROMPT, json_mode=True)
+            raw = self.llm.generate(prompt, system=SYSTEM_PROMPT, json_mode=True, schema=self.schema)
             parsed = extract_json_block(raw)
             missing = self._validate_shape(parsed)
             if missing:

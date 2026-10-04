@@ -88,7 +88,10 @@ class LocalLLM:
                 "then `ollama pull <model>` for the model named in the config."
             )
 
-    def generate(self, prompt: str, system: str | None = None, json_mode: bool = False) -> str:
+    def generate(self, prompt: str, system: str | None = None, json_mode: bool = False,
+                 schema: dict | None = None) -> str:
+        """json_mode asks for any valid JSON; schema (a JSON schema) also
+        constrains decoding to that shape, e.g. a list's exact length."""
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -100,7 +103,9 @@ class LocalLLM:
                 "num_ctx": self.num_ctx,
             },
         }
-        if json_mode:
+        if schema is not None:
+            payload["format"] = schema
+        elif json_mode:
             payload["format"] = "json"
 
         t0 = time.time()
