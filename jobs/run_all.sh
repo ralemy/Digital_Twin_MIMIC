@@ -9,7 +9,9 @@
 # Other options: -i <seconds> (how often Slurm is checked, at least 60,
 # default 120), --foreground (don't detach), --redo-extract (re-run steps 1-2
 # even if their outputs exist), --profile <file> (passed on to every job),
-# --unattended (see "Unattended runs" below).
+# --unattended (see "Unattended runs" below), --redo <stage,...> (run
+# finished stages again, e.g. after adding conditions: --redo calibrate,run,
+# evaluate; their checkpoints mean only new work is computed).
 #
 # Stages, each run by the job script already in jobs/:
 #   models     prep2_download_models.sh        <config>   (pulls only what's missing)
@@ -100,7 +102,7 @@ declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=720 [calibrate]
 usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 ORIG_ARGS=("$@")
-SCOPE=""; ACTION=run; FOREGROUND=0; HREB=0; REDO_EXTRACT=0; UNATTENDED=0
+SCOPE=""; ACTION=run; FOREGROUND=0; HREB=0; REDO_EXTRACT=0; UNATTENDED=0; REDO=""
 PROFILE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -110,6 +112,8 @@ while [ $# -gt 0 ]; do
         --hreb-approved) HREB=1; shift ;;
         --redo-extract) REDO_EXTRACT=1; shift ;;
         --unattended) UNATTENDED=1; shift ;;
+        --redo) REDO="${2:-}"; shift 2 ;;
+        --redo=*) REDO="${1#--redo=}"; shift ;;
         --plan) ACTION=plan; shift ;;
         --status) ACTION=status; shift ;;
         --stop) ACTION=stop; shift ;;
@@ -435,6 +439,7 @@ fi
 if [ "$FOREGROUND" -eq 0 ]; then
     if driver_alive; then
         echo "== a driver is already running ($(cat "$DRIVER" 2>/dev/null)) — following its log =="
+        [ -n "$REDO" ] && echo "== --redo ignored: it applies when a driver starts; stop this one first (--stop) ==" >&2
         read -r d_host d_pid 2>/dev/null < "$DRIVER"
     else
         rm -f "$STOP_FILE"
@@ -498,6 +503,17 @@ stop_driver() {
 trap stop_driver INT TERM HUP
 trap 'kill "$HEARTBEAT_PID" 2>/dev/null; rm -f "$HEARTBEAT" "$DRIVER"' EXIT
 
+# --redo: forget these stages' status so they run again (only once, by this
+# driver; a later re-attach without --redo leaves them as they are).
+if [ -n "$REDO" ]; then
+    for stage in ${REDO//,/ }; do
+        if [[ " ${STAGES[*]} " != *" $stage "* ]]; then
+            log "== --redo: unknown stage '$stage' (stages: ${STAGES[*]}) =="; exit 1
+        fi
+        [ -f "$STATE" ] && awk -v s="$stage" '$1 != s' "$STATE" > "$STATE.tmp.$$" && mv "$STATE.tmp.$$" "$STATE"
+        log "== --redo: stage '$stage' will run again =="
+    done
+fi
 log "== run_all $SCOPE: $CONFIG, checking Slurm every ${INTERVAL}s (host $(hostname), pid $$) =="
 show_plan >&2
 

@@ -23,6 +23,9 @@ Usage:
     python src/calibrate.py --config-file config/config_nibi_lean_tuned.yaml [--grid config/tuning_grid.yaml] [--full-refresh]
 Writes:
     <results_dir>/calibration.json
+    <results_dir>/calibration_smape.npz   per-patient sMAPE of each condition on
+                                          the calibration patients, for
+                                          src/select_rq_model.py
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ import numpy as np
 import tracking
 from checkpoint import RunCheckpoint, atomic_path, checkpoint_root, condition_fingerprint
 from common import LLM_CONDITIONS, ensure_work_dirs, get_logger, load_config, parse_step_args, split_condition
+from evaluate_results import per_patient_smape
 from harmonization_agent import build_tensors
 from metrics import interval_coverage, mean_interval_width
 from pipeline import fit_models, run_condition, validate_conditions
@@ -105,6 +109,8 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     output = {"alpha": alpha, "n_calibration_patients": len(calib_ids), "config": config_path,
               "conditions": {}}
+    smape_path = out_path.parent / "calibration_smape.npz"
+    per_patient = {}
 
     for condition in cfg["conditions"]:
         base, variant = split_condition(condition)
@@ -129,9 +135,14 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
             "width_before": mean_interval_width(result["y_lower"], result["y_upper"]),
             "width_after": mean_interval_width(lo, hi),
             "llm_fallbacks": result["llm_fallbacks"],
+            "llm_fallback_rate": (result["llm_fallbacks"] / max(1, len(result["stay_ids"]))
+                                  if result["llm_fallbacks"] is not None else None),
             "llm_filled": (dict(zip(variables, map(int, result["llm_filled"])))
                            if result["llm_filled"] is not None else None),
         }
+        pp = per_patient_smape(result["y_true"], result["y_pred"])
+        output["conditions"][condition]["smape_mean"] = float(np.nanmean(pp))
+        per_patient[condition] = pp
         log.info("Condition '%s': factors %s; calibration-set coverage %.3f -> %.3f",
                  condition, {k: (round(v, 2) if v else v) for k, v in factors.items()},
                  output["conditions"][condition]["coverage_before"],
@@ -139,6 +150,9 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
         checkpoint.check_owner()
         with atomic_path(out_path) as tmp:
             tmp.write_text(json.dumps(output, indent=2))
+        with atomic_path(smape_path) as tmp:
+            with open(tmp, "wb") as f:
+                np.savez(f, stay_ids=np.array(sorted(calib_ids)), **per_patient)
         c = output["conditions"][condition]
         tracking.log_metrics({"calibrate/conditions_done": len(output["conditions"]),
                               **{f"calibrate/{condition}/{k}": c[k] for k in

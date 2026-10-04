@@ -212,6 +212,11 @@ evaluation:
   bootstrap_resamples: 2000
   bootstrap_alpha: 0.05
   interval_width_pct: 90
+  # Models whose RQ1-RQ3 analysis is reported: "primary" (llm.model, the
+  # pre-specified analysis) plus any LLM variant chosen on validation data
+  # by src/select_rq_model.py (it adds the variant here with --write-config,
+  # together with the conditions RQ2 needs, e.g. full_pipeline_no_critic@<v>).
+  rq_models: [primary]
   # Extra paired comparisons [A, B] (A - B per-patient sMAPE, as for the
   # RQs) in statistical_analysis.json under extra_comparisons.
   extra_comparisons:

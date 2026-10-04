@@ -160,7 +160,37 @@ def extra_comparisons(cfg: dict, results_dir: Path) -> list[dict]:
     return out
 
 
-def rq3_subgroup_analysis(cfg: dict, results_dir: Path) -> dict | None:
+def rq_analyses(cfg: dict, results_dir: Path, variant: str | None) -> dict:
+    """RQ1 (single model vs full pipeline), RQ2 (critic ablation) and RQ3
+    (stable vs deteriorating) for one model: llm.model (variant None) or an
+    LLM variant, i.e. on its '@<variant>' conditions. RQ2 needs
+    full_pipeline_no_critic@<variant> in `conditions`; a missing condition
+    is skipped with a warning naming it."""
+    sfx = f"@{variant}" if variant else ""
+    names = {k: k + sfx for k in ("single_model_llm", "full_pipeline", "full_pipeline_no_critic")}
+    single, full, no_critic = (load_raw(results_dir, names[k]) for k in names)
+    out = {}
+    if single is not None and full is not None:
+        out["RQ1_orchestration_vs_single_model"] = compare_conditions(
+            names["single_model_llm"], names["full_pipeline"], single, full, cfg)
+    else:
+        log.warning("Skipping RQ1%s — missing %s or %s results.", sfx, names["single_model_llm"], names["full_pipeline"])
+    if full is not None and no_critic is not None:
+        out["RQ2_critic_accuracy_tradeoff"] = compare_conditions(
+            names["full_pipeline_no_critic"], names["full_pipeline"], no_critic, full, cfg)
+        out["RQ2_critic_plausibility"] = plausibility_violation_comparison(
+            names["full_pipeline_no_critic"], names["full_pipeline"], no_critic, full, cfg)
+    else:
+        log.warning("Skipping RQ2%s — missing %s results (add it to `conditions`).", sfx,
+                    names["full_pipeline_no_critic"] if no_critic is None else names["full_pipeline"])
+    rq3 = rq3_subgroup_analysis(cfg, results_dir, (names["single_model_llm"], names["full_pipeline"]))
+    if rq3 is not None:
+        out["RQ3_deterioration_subgroup"] = rq3
+    return out
+
+
+def rq3_subgroup_analysis(cfg: dict, results_dir: Path,
+                          conditions=("single_model_llm", "full_pipeline")) -> dict | None:
     work_dir = Path(cfg["paths"]["work_dir"])
     vaso_path = vasopressor_cache_path(cfg)
     cohort_path = work_dir / "cohort.parquet"
@@ -183,7 +213,7 @@ def rq3_subgroup_analysis(cfg: dict, results_dir: Path) -> dict | None:
 
     # _ = [v["name"] for v in cfg["variables"]]
     subgroup_results = {}
-    for condition in ("single_model_llm", "full_pipeline"):
+    for condition in conditions:
         data = load_raw(results_dir, condition)
         if data is None:
             continue
@@ -255,30 +285,17 @@ def main(config_path: str) -> None:
     results_dir = Path(cfg["paths"]["results_dir"])
     output = {}
 
-    single = load_raw(results_dir, "single_model_llm")
-    full = load_raw(results_dir, "full_pipeline")
-    no_critic = load_raw(results_dir, "full_pipeline_no_critic")
-
-    if single is not None and full is not None:
-        output["RQ1_orchestration_vs_single_model"] = compare_conditions(
-            "single_model_llm", "full_pipeline", single, full, cfg
-        )
-    else:
-        log.warning("Skipping RQ1 comparison — missing single_model_llm or full_pipeline results.")
-
-    if full is not None and no_critic is not None:
-        output["RQ2_critic_accuracy_tradeoff"] = compare_conditions(
-            "full_pipeline_no_critic", "full_pipeline", no_critic, full, cfg
-        )
-        output["RQ2_critic_plausibility"] = plausibility_violation_comparison(
-            "full_pipeline_no_critic", "full_pipeline", no_critic, full, cfg
-        )
-    else:
-        log.warning("Skipping RQ2 comparison — missing full_pipeline or full_pipeline_no_critic results.")
-
-    rq3 = rq3_subgroup_analysis(cfg, results_dir)
-    if rq3 is not None:
-        output["RQ3_deterioration_subgroup"] = rq3
+    # RQ1-RQ3 for each model in evaluation.rq_models: "primary" (llm.model,
+    # the pre-specified analysis, reported under the plain RQ keys) and any
+    # LLM variant, e.g. one chosen on validation data by
+    # src/select_rq_model.py (reported under "RQ_model@<variant>").
+    for model in (cfg.get("evaluation") or {}).get("rq_models") or ["primary"]:
+        variant = None if model in (None, "primary") else model
+        rq = rq_analyses(cfg, results_dir, variant)
+        if variant is None:
+            output.update(rq)
+        elif rq:
+            output[f"RQ_model@{variant}"] = rq
 
     model_comparisons = model_variant_comparisons(cfg, results_dir)
     if model_comparisons:

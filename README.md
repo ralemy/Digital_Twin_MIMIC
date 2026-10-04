@@ -391,6 +391,36 @@ primary pipeline. They appear under `extra_comparisons` in
 the RQs. The critic's model is recorded in the `critic_model` column of
 `all_conditions_summary.csv`.
 
+### Answering the RQs with another model
+
+RQ1–RQ3 are answered for each model in `evaluation.rq_models`. The default
+`[primary]` is `llm.model`, the pre-specified analysis. To also answer them
+with the best-performing model, choose it on validation data, not on the
+test set:
+
+```bash
+python src/select_rq_model.py --config-file config/config_nibi_lean_tuned.yaml --write-config
+bash jobs/run_all.sh lean --unattended --redo calibrate,run,evaluate
+```
+
+`select_rq_model.py` ranks `full_pipeline` for each model by per-patient
+sMAPE on the calibration patients (from `calibration_smape.npz`).
+- **Eligibility:** models whose fallback rate is above the tuning cap are
+  excluded.
+- **Rule:** the best eligible model is chosen only if it is significantly
+  better than the primary (95% paired-bootstrap CI below 0). Otherwise the
+  primary stays.
+- **Outputs:** the rule and the ranking are saved to
+  `rq_model_selection.json`.
+- **`--write-config`:** adds the chosen model to `rq_models`, along with the
+  conditions its RQ2 needs (`full_pipeline_no_critic@<model>`,
+  `full_pipeline_no_similarity@<model>`).
+
+The `--redo` run computes only those new conditions; checkpoints keep the
+rest. `evaluate_results.py` then reports the chosen model's RQs under
+`RQ_model@<model>`, next to the primary's. The chosen model keeps the
+settings tuned for the primary; state that as a limitation, or re-tune.
+
 ### The whole pipeline in one command: `jobs/run_all.sh`
 
 `jobs/run_all.sh` runs every stage for one scope:
