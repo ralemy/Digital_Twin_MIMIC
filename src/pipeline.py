@@ -99,12 +99,19 @@ def run_condition(
              condition, len(stay_ids), n_batches, batch_size, n_workers)
     t_start = time.time()
 
+    models_loaded = False
     for b, start in enumerate(range(0, len(stay_ids), batch_size)):
         batch_ids = stay_ids[start:start + batch_size]
         batch = checkpoint.load_batch(b, batch_ids) if checkpoint is not None else None
         if batch is not None:
             n_resumed += 1
         else:
+            if not models_loaded:
+                # Before the first batch computed here: load the condition's
+                # models, so its first requests don't time out while Ollama
+                # loads them (see llm_client.LOAD_TIMEOUT_S).
+                _load_models(base, agents)
+                models_loaded = True
             batch = _predict_batch(condition, cfg, batch_ids, test_tensors, fitted_models, n_workers)
             if checkpoint is not None:
                 checkpoint.save_batch(b, batch_ids, batch)
@@ -141,6 +148,22 @@ def run_condition(
         "llm_filled": total_filled if base in LLM_CONDITIONS else None,
         "llm_errors": errors_so_far(),
     }
+
+
+# The conditions whose critic calls its LLM (no_critic skips the critic,
+# clip_critic only clips; see _predict_batch).
+LLM_CRITIC_CONDITIONS = ("full_pipeline", "full_pipeline_no_similarity")
+
+
+def _load_models(base: str, agents: dict) -> None:
+    """Load the forecaster's model and, if the condition calls the critic's
+    LLM and it is another model, the critic's."""
+    seen = set()
+    for name in ("forecaster", "critic") if base in LLM_CRITIC_CONDITIONS else ("forecaster",):
+        llm = getattr(agents.get(name), "llm", None)
+        if llm is not None and llm.model not in seen:
+            seen.add(llm.model)
+            llm.load()
 
 
 def _predict_batch(

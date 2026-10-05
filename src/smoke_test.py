@@ -118,6 +118,7 @@ def main(config_path: str) -> None:
     splits = split_tensors(tensors, cohort)
 
     with patch("llm_client.LocalLLM._check_server", lambda self: None), \
+         patch("llm_client.LocalLLM.load", lambda self: None), \
          patch("llm_client.LocalLLM.generate", mock_llm_generate):
         from pipeline import fit_models, run_condition, validate_conditions
         validate_conditions(cfg)

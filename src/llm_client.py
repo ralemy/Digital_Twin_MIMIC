@@ -27,6 +27,13 @@ log = get_logger("llm_client")
 
 # Extra attempts after an HTTP 5xx from Ollama before the call fails.
 SERVER_ERROR_RETRIES = 2
+# Seconds to wait for Ollama to load a model (LocalLLM.load). Loading
+# Baichuan-M2-32B from $SCRATCH on Trillium took ~176 s (job 1033530), so the
+# first requests of a condition, at llm.request_timeout_s=180, timed out while
+# the model loaded (calibrate job 1032638) and were scored as fallbacks. A
+# constant, not an llm.* key, because the llm section is part of every LLM
+# condition's checkpoint fingerprint.
+LOAD_TIMEOUT_S = 900
 
 
 class LocalLLM:
@@ -42,6 +49,10 @@ class LocalLLM:
         self.max_tokens = llm_cfg["max_tokens"]
         self.timeout = llm_cfg["request_timeout_s"]
         self.num_ctx = llm_cfg["num_ctx"]
+        # Ollama's `think` for reasoning models: false turns the reasoning
+        # off. Absent = not sent (Ollama's default). Baichuan-M2 reasoned past
+        # max_tokens on every forecast, leaving the answer empty (job 1033722).
+        self.think = llm_cfg.get("think")
 
         # How many forecasting/critic calls src/pipeline.py will fire at this
         # LocalLLM concurrently (see performance.llm_max_concurrent_requests
@@ -88,6 +99,22 @@ class LocalLLM:
                 "then `ollama pull <model>` for the model named in the config."
             )
 
+    def load(self) -> None:
+        """Have Ollama load the model now (a request with no prompt loads it
+        without generating), so the first forecasts don't spend their
+        request timeout waiting for it. Raises if it can't be loaded.
+        num_ctx must match generate()'s: without it Ollama picks its own
+        context length, and at 8 request slots Baichuan-M2's filled the
+        job's 188 GiB of host memory (OOM-killed, job 1033643); a different
+        num_ctx would also make the first real request reload the model."""
+        t0 = time.time()
+        resp = self._session.post(f"{self.host}/api/generate", timeout=LOAD_TIMEOUT_S,
+                                  json={"model": self.model, "options": {"num_ctx": self.num_ctx}})
+        if not resp.ok:
+            raise requests.exceptions.HTTPError(
+                f"{resp.status_code} loading {self.model} in Ollama: {resp.text[:300]}", response=resp)
+        log.info("Model %s loaded in %.0fs.", self.model, time.time() - t0)
+
     def generate(self, prompt: str, system: str | None = None, json_mode: bool = False,
                  schema: dict | None = None) -> str:
         """json_mode asks for any valid JSON; schema (a JSON schema) also
@@ -103,6 +130,8 @@ class LocalLLM:
                 "num_ctx": self.num_ctx,
             },
         }
+        if self.think is not None:
+            payload["think"] = bool(self.think)
         if schema is not None:
             payload["format"] = schema
         elif json_mode:
@@ -129,9 +158,13 @@ class LocalLLM:
         # Ollama reports done_reason "length" when generation hit num_predict:
         # the output is cut off mid-answer, so say so rather than letting the
         # caller report it as malformed JSON.
+        # The start and end of the output show where the tokens went (e.g. a
+        # runaway list or digits), which the token count alone doesn't.
         if body.get("done_reason") == "length":
             raise ValueError(f"LLM output truncated at max_tokens={self.max_tokens} "
-                             f"({body.get('eval_count', '?')} tokens generated) — raise llm.max_tokens in the config")
+                             f"({body.get('eval_count', '?')} tokens generated) — raise llm.max_tokens in the config; "
+                             f"output starts: {text[:150]!r}, ends: {text[-150:]!r}; "
+                             f"{len(body.get('thinking') or '')} chars of reasoning (Ollama's thinking field)")
         return text
 
 

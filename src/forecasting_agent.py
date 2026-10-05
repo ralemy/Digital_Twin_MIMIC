@@ -181,7 +181,8 @@ class ForecastingAgent:
         self.error_counts: dict[str, int] = {}
         self._fallback_lock = threading.Lock()
 
-    def forecast(self, obs: np.ndarray, similarity_context: dict | None = None) -> dict:
+    def build_prompt(self, obs: np.ndarray, similarity_context: dict | None = None) -> str:
+        """The user prompt forecast() sends (src/probe_output.py sends it too)."""
         obs_summary = summarize_observation(obs, self.variables)
         obs_block = _format_observation_block(obs_summary, self.units)
 
@@ -221,7 +222,10 @@ class ForecastingAgent:
         if self.strict_length:
             prompt += (f" Every variable listed above, including any with no observations, "
                        f"must have exactly {self.horizon_hours} values — no more, no fewer.")
+        return prompt
 
+    def forecast(self, obs: np.ndarray, similarity_context: dict | None = None) -> dict:
+        prompt = self.build_prompt(obs, similarity_context)
         raw = parsed = None
         try:
             raw = self.llm.generate(prompt, system=SYSTEM_PROMPT, json_mode=True, schema=self.schema)

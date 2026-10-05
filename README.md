@@ -752,6 +752,7 @@ jobs/smoke_test.sh                        pre-flight: synthetic data, mocked LLM
 jobs/prep1_download_mimic.sh              download MIMIC-IV into $DT_MIMIC_DIR
 jobs/prep2_download_models.sh <cfg>       download the Ollama models into $DT_OLLAMA_MODELS
 jobs/bench_ollama.sh                      Ollama throughput benchmark
+jobs/probe_output.sh <cfg> <variant>      what one model generates for the forecast prompt (schema vs plain JSON)
 jobs/step1_resolve_items.sh <cfg>         step 1
 jobs/step2_extract_cohort.sh <cfg>        step 2
 jobs/step3b_tune.sh <cfg>                 step 3b (GPU)
@@ -784,6 +785,7 @@ src/checkpoint.py             checkpoints and their fingerprints
 src/metrics.py                evaluation metrics (sMAPE, KS, coverage, PVR, ...)
 src/tracking.py               optional W&B metrics (aggregates only)
 src/bench_ollama.py           Ollama benchmark (jobs/bench_ollama.sh)
+src/probe_output.py           LLM output probe (jobs/probe_output.sh)
 src/smoke_test.py             synthetic end-to-end test
 docs/                         walkthroughs of the jobs' settings, steps 1 and 2, runtime estimates
 ```
