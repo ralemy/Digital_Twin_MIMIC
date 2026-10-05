@@ -107,6 +107,7 @@ llm:
     baichuan_m2:
       model: hf.co/bartowski/baichuan-inc_Baichuan-M2-32B-GGUF:Q8_0
       alias: baichuan-m2:32b
+      think: false
     gemma3:
       model: gemma3:27b
     medgemma:

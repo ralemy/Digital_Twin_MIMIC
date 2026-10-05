@@ -200,9 +200,12 @@ llm:
     baichuan_m2:
       # Baichuan-M2-32B: medical fine-tune of Qwen2.5-32B (Apache 2.0, not
       # gated). Q8_0 to match the primary model's quantization. A reasoning
-      # model, but format=json makes it answer in JSON straight away.
+      # model: with Ollama's default it reasoned past max_tokens on every
+      # forecast, leaving the answer empty (probe jobs 1033722, 1034050);
+      # think: false turns the reasoning off and it answers in ~800 tokens.
       model: "hf.co/bartowski/baichuan-inc_Baichuan-M2-32B-GGUF:Q8_0"   # ~35GB
       alias: "baichuan-m2:32b"
+      think: false
     gemma3:
       model: "gemma3:27b"                                       # Q4_K_M, ~17GB
     medgemma:
