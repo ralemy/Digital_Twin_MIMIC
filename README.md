@@ -488,6 +488,12 @@ writes to `results_tuned` and `checkpoints_tuned`, so untuned results are
 kept. With `workers_can_write_repo: false`, `$TUNED` is a symlink and the
 file itself is in `$DT_RESULTS_DIR/tuned-configs/`.
 
+`$TUNED` is git-ignored (`config/*_tuned.yaml`), like any config a script
+writes: it holds the tuning results of the cluster that ran step 3b, and
+checkpoints made with one cluster's tuned settings refuse another's
+(`CheckpointMismatch`). Never commit it; to change a setting in it, edit the
+cluster's own copy or re-run tuning.
+
 ### Step 3c — calibrate the prediction intervals
 
 ```bash

@@ -18,6 +18,15 @@ __pycache__/
 *profile*.yml
 !config/profile.sample.yml
 
+# Generated configs — never commit a config a script writes: it belongs to the
+# run and cluster that wrote it. Tuned configs are written by each cluster's
+# own tune job (src/tune.py; select_rq_model.py --write-config edits them); on
+# Trillium a symlink into $DT_RESULTS_DIR/tuned-configs. One cluster's copy in
+# git replaced another's tuned settings (Trillium calibrate, CheckpointMismatch).
+# Only hand-edited configs (config_alliance_*.yaml, tuning_grid.yaml,
+# profile.sample.yml, ...) are tracked.
+config/*_tuned.yaml
+
 # jobs/run_all.sh state and logs
 run_all/
 
