@@ -281,7 +281,13 @@ submit_chain() {
     config=$(stage_config "$stage")
     for m in $(plan_chain "$est"); do
         dep=()
-        [ ${#ids[@]} -gt 0 ] && dep=(--dependency="afternotok:$(IFS=:; echo "${ids[*]}")" --kill-on-invalid-dep=yes)
+        if [ ${#ids[@]} -gt 0 ]; then
+            dep=(--dependency="afternotok:$(IFS=:; echo "${ids[*]}")")
+            # Trillium's sbatch rejects --kill-on-invalid-dep ("option not
+            # recognized"). It is only a backstop there: watch_chain cancels
+            # the rest of a chain once a job completes.
+            [ "${DT_CLUSTER:-}" != trillium ] && dep+=(--kill-on-invalid-dep=yes)
+        fi
         if ! jid=$(bash jobs/submit.sh --parsable --time="$(hhmm "$m")" --output="$DT_LOG_DIR/%x-%j.out" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}"); then
             log "$stage: sbatch failed"
             [ ${#ids[@]} -gt 0 ] && scancel "${ids[@]}"
