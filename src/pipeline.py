@@ -110,7 +110,7 @@ def run_condition(
                 # Before the first batch computed here: load the condition's
                 # models, so its first requests don't time out while Ollama
                 # loads them (see llm_client.LOAD_TIMEOUT_S).
-                _load_models(base, agents)
+                _load_models(agents)
                 models_loaded = True
             batch = _predict_batch(condition, cfg, batch_ids, test_tensors, fitted_models, n_workers)
             if checkpoint is not None:
@@ -150,20 +150,13 @@ def run_condition(
     }
 
 
-# The conditions whose critic calls its LLM (no_critic skips the critic,
-# clip_critic only clips; see _predict_batch).
-LLM_CRITIC_CONDITIONS = ("full_pipeline", "full_pipeline_no_similarity")
-
-
-def _load_models(base: str, agents: dict) -> None:
-    """Load the forecaster's model and, if the condition calls the critic's
-    LLM and it is another model, the critic's."""
-    seen = set()
-    for name in ("forecaster", "critic") if base in LLM_CRITIC_CONDITIONS else ("forecaster",):
-        llm = getattr(agents.get(name), "llm", None)
-        if llm is not None and llm.model not in seen:
-            seen.add(llm.model)
-            llm.load()
+def _load_models(agents: dict) -> None:
+    """Load the forecaster's model. A critic on the same model needs nothing
+    more; a critic on another model is loaded before each batch's critic
+    phase (see the two-phase batches in _predict_batch)."""
+    llm = getattr(agents.get("forecaster"), "llm", None)
+    if llm is not None:
+        llm.load()
 
 
 def _predict_batch(
@@ -258,10 +251,11 @@ def _predict_batch(
         use_similarity = base != "full_pipeline_no_similarity"
         use_critic = base != "full_pipeline_no_critic"
 
-        def _full_pipeline_worker(sid):
+        def _forecast_worker(sid):
             sim_ctx = similarity.query(test_tensors[sid]["obs"]) if use_similarity else None
-            raw = forecaster.forecast(test_tensors[sid]["obs"], similarity_context=sim_ctx)
+            return forecaster.forecast(test_tensors[sid]["obs"], similarity_context=sim_ctx)
 
+        def _critic_worker(raw):
             if use_critic:
                 reviewed = critic.review(raw)
                 final_forecast = {"forecast": reviewed["forecast"], "interval_halfwidth": raw["interval_halfwidth"]}
@@ -273,8 +267,25 @@ def _predict_batch(
             fcast, interval, _ = _llm_forecast_to_arrays(final_forecast, variables, horizon_hours)
             return fcast, interval, violations
 
+        # A critic on another model (critic_variant): forecast the whole batch,
+        # then review it, so Ollama switches models twice per batch. Run per
+        # patient, both models' requests interleave, and two models that don't
+        # fit on the GPU together (MedGemma and Gemma 3, ~56 GiB each at 8
+        # slots, job 1034109) are evicted back and forth, timing requests out.
+        # Each patient's critic still sees only that patient's forecast.
+        two_phase = (use_critic and critic.llm is not None
+                     and critic.llm.model != forecaster.llm.model)
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
-            for pi, (fcast, interval, violations) in enumerate(ex.map(_full_pipeline_worker, batch_ids)):
+            if two_phase:
+                # Load each phase's model first (up to llm_client.LOAD_TIMEOUT_S),
+                # so the phase's first requests don't time out on the switch.
+                forecaster.llm.load()
+                raws = list(ex.map(_forecast_worker, batch_ids))
+                critic.llm.load()
+                results = ex.map(_critic_worker, raws)
+            else:
+                results = ex.map(lambda sid: _critic_worker(_forecast_worker(sid)), batch_ids)
+            for pi, (fcast, interval, violations) in enumerate(results):
                 y_pred[pi] = fcast
                 y_lower[pi] = fcast - interval
                 y_upper[pi] = fcast + interval
