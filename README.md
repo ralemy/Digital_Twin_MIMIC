@@ -5,9 +5,11 @@ data-harmonization agent, a patient-similarity agent, an LLM-based
 forecasting agent, a critic/validation agent, three non-LLM baselines
 (naive, gradient-boosted trees, LSTM) and the RQ1–RQ3 statistical analysis —
 run as Slurm jobs on a Digital Research Alliance of Canada cluster
-([Nibi](https://docs.alliancecan.ca/wiki/Nibi),
-[Rorqual](https://docs.alliancecan.ca/wiki/Rorqual/en), ...), one H100 80GB
-GPU per job.
+([Rorqual](https://docs.alliancecan.ca/wiki/Rorqual/en),
+[Trillium](https://docs.alliancecan.ca/wiki/Trillium), ...), one H100 80GB
+GPU per job. Cluster differences (internet on compute nodes, where jobs may
+write, GPU-only partitions) are settings in your profile (section 1), not
+code changes.
 
 Everything stays on the cluster: MIMIC-IV is read from disk, and every LLM
 call goes to an Ollama server the job starts on its own compute node,
@@ -126,15 +128,23 @@ shells get the variables from `~/.bashrc` automatically.
 | Profile key | What it is | Sets | Repo symlink |
 |---|---|---|---|
 | `slurm.account` | your allocation, e.g. `def-<pi>`; `sshare -U -u $USER` lists yours (use the `def-...` one — GPU jobs are charged to its `_gpu` counterpart automatically) | `DT_ACCOUNT`, exported as `SBATCH_ACCOUNT`/`SALLOC_ACCOUNT` | |
+| `slurm.gpu_jobs_only` | `true` where every job must take a GPU and may not ask for memory (Trillium's GPU subcluster); `jobs/submit.sh` then gives every job one GPU and drops `--mem`. Empty: `true` on Trillium, `false` elsewhere | `DT_GPU_JOBS_ONLY` | |
 | `paths.mimic_dir` | where the MIMIC-IV files (`hosp/`, `icu/`) are downloaded | `DT_MIMIC_DIR` | `mimic-iv` |
-| `paths.results_dir` | where results are recorded: `<results_dir>/mimic-iv-twin-work` (lean) and `<results_dir>/mimic-iv-twin-work-full` (full) | `DT_RESULTS_DIR` | |
+| `paths.results_dir` | where results are recorded: `<results_dir>/mimic-iv-twin-work` (lean) and `<results_dir>/mimic-iv-twin-work-full` (full). Must be on `$SCRATCH` when `workers_can_write_repo` is `false` | `DT_RESULTS_DIR` | |
+| `paths.logs_dir` | where job `.out` files and Ollama logs go (empty: `$DT_REPO/logs`). Must be on `$SCRATCH` when `workers_can_write_repo` is `false` | `DT_LOGS_ROOT` | |
 | `paths.ollama_models` | where the Ollama models are downloaded | `DT_OLLAMA_MODELS`, `OLLAMA_MODELS` | `ollama-models` |
 | `paths.ollama_bin` | where Ollama is installed; must end in `/bin` (default `~/ollama-local/bin`, ~2 GB) | `DT_OLLAMA_BIN`, first on `PATH` | |
 | `environment.ollama_version` | the Ollama release to install (empty: 0.34.4, the version this project was run with) | `DT_OLLAMA_VERSION` | |
 | `environment.modules` | modules every job loads before `.venv` (empty: `StdEnv/2023 python/3.11`) | `DT_MODULES` | |
 | `environment.disable_wandb` | `true` (default) keeps Weights & Biases off whatever the configs say; `false` allows it (section 4) | `DT_WANDB_DISABLED`, `WANDB_MODE=disabled` | |
-| `environment.workers_have_internet` | whether the cluster's compute nodes reach the internet: `true` (default, e.g. Nibi) or `false` (e.g. Rorqual) — with `false`, downloads run on a login node (section 4) | `DT_WORKER_INTERNET` | |
+| `environment.workers_have_internet` | whether the cluster's compute nodes reach the internet, e.g. `false` on Rorqual and Trillium. With `false`, downloads run on a login node (section 4). Empty: `false` on Trillium, `true` elsewhere | `DT_WORKER_INTERNET` | |
+| `environment.workers_can_write_repo` | whether compute nodes can write the repo, `$HOME` and `/project`. With `false`, the setup refuses a `results_dir` or `logs_dir` there, and makes the tuned configs (`config/<config>_tuned.yaml`) symlinks into `$DT_RESULTS_DIR/tuned-configs`. Empty: `false` on Trillium, `true` elsewhere | `DT_WORKER_WRITES_REPO` | `config/*_tuned.yaml` (when `false`) |
 | `physionet.username`, `physionet.password` | your PhysioNet account, credentialed for MIMIC-IV — read only by the download job | (not exported) | |
+
+Each `true`/`false` key also accepts `yes`/`no`, `on`/`off` and `1`/`0`;
+anything else stops the setup with a message. The cluster is taken from
+`$CC_CLUSTER`, or from the login node's name on Trillium; elsewhere it is
+`local` and every empty flag gets its non-Trillium default.
 
 Paths must be absolute; `~`, `$HOME`, `$SCRATCH`, `$USER` and `$DT_REPO`
 (where the repo is cloned) are expanded. The template has an example for
@@ -143,6 +153,10 @@ each. Guidelines from the Alliance storage policies:
 - **MIMIC-IV** (~10 GB for `hosp/` + `icu/`) and **results** belong on
   project space (`~/projects/<account>/...`): backed up, and not purged.
   Avoid `$HOME` itself for MIMIC-IV (small quota).
+- **Exception — Trillium:** compute nodes can only read `$HOME` and
+  `/project`, so `results_dir` and `logs_dir` go on `$SCRATCH` (e.g.
+  `$SCRATCH/dt-results`, `$SCRATCH/dt-logs`). Scratch is not backed up and
+  is purged: copy finished results to project space yourself.
 - **Ollama models** (~190 GB for all six) fit best on scratch (`$SCRATCH`,
   large quota, not backed up). Scratch is purged after a period of
   inactivity; if models go missing, download them again (section 4).
@@ -166,6 +180,9 @@ which key to fix, if it is missing, readable by others or incomplete — then:
 1. **Symlinks.** Creates `mimic-iv` → `$DT_MIMIC_DIR` and `ollama-models` →
    `$DT_OLLAMA_MODELS` in the repo (or re-points them if they lead
    elsewhere), plus their target directories and `$DT_RESULTS_DIR`. The configs reach MIMIC-IV through `mimic-iv`.
+   With `workers_can_write_repo: false`, each `config/<config>_tuned.yaml`
+   also becomes a symlink into `$DT_RESULTS_DIR/tuned-configs`, so step 3b
+   can write it from a compute node.
 2. **Ollama, without root.** Downloads the Ollama release
    `environment.ollama_version` (~1.4 GB, from GitHub; login nodes have
    internet access) and unpacks it into the parent of `paths.ollama_bin`
@@ -257,12 +274,12 @@ mocks the LLM, and runs every condition end to end.
 
 ```bash
 cd "$DT_REPO"
-sbatch jobs/smoke_test_nibi.sh          # 4 CPUs, 8 GB, 15 min limit
-sq                                      # your jobs
+bash jobs/submit.sh jobs/smoke_test.sh   # 4 CPUs, 8 GB, 15 min limit (on Trillium: one GPU, no --mem)
+sq                                            # your jobs
 ```
 
-When it ends, `logs/mimic-twin-smoke-<jobid>.out` should finish
-with:
+When it ends, `$DT_LOGS_ROOT/mimic-twin-smoke-<jobid>.out` (`paths.logs_dir`;
+`logs/` in the repo by default) should finish with:
 
 ```
 [smoke_test] INFO: SMOKE TEST PASSED: full pipeline ran end to end with no errors.
@@ -281,16 +298,18 @@ it's much cheaper than finding out after a multi-hour job.
 You need credentialed MIMIC-IV access and an approved, compliant place to
 store the data ("Before you start", items 1–3), and `physionet.username` /
 `physionet.password` filled in in your profile (section 1). Then download
-into `$DT_MIMIC_DIR` and verify the checksums:
+into `$DT_MIMIC_DIR`:
 
 ```bash
-sbatch jobs/prep1_download_mimic_nibi.sh          # MIMIC-IV 3.1; resumable, re-submit after a timeout
-sbatch jobs/verify_mimic_nibi.sh                  # after it finishes
+bash jobs/submit.sh jobs/prep1_download_mimic.sh   # MIMIC-IV 3.1; resumable, re-submit after a timeout
 ```
 
-If your profile says `workers_have_internet: false`, run the download on the
-login node instead (see "Clusters without internet on compute nodes" below);
-`verify` needs no internet and is submitted as usual.
+It checks every `hosp/` and `icu/` file against PhysioNet's
+`SHA256SUMS.txt` before and after downloading, deletes any that fail, and
+downloads them again, so running it again also verifies and repairs an
+existing copy (e.g. if step 2 fails with DuckDB's "Input is not a GZIP
+stream"). If your profile says `workers_have_internet: false`, run it on the
+login node instead (see "Clusters without internet on compute nodes" below).
 
 The result is the standard PhysioNet layout, reached by the configs
 through the repo's `mimic-iv` symlink:
@@ -318,7 +337,7 @@ The configs compare six models (~190 GB in total):
 | Llama3-Med42-70B Q4_K_M | `med42:70b` | ~43 GB | Hugging Face (mradermacher) |
 
 ```bash
-sbatch jobs/prep2_download_models.sh config/config_alliance_lean.yaml
+bash jobs/submit.sh jobs/prep2_download_models.sh config/config_alliance_lean.yaml
 ```
 
 (With `workers_have_internet: false`, run it on the login node — below.)
@@ -329,12 +348,12 @@ needs a login, but accept each model's licence first ("Before you start",
 item 5). The GPU jobs
 never download: they stop with the commands to run if a model is missing.
 
-### Clusters without internet on compute nodes (e.g. Rorqual)
+### Clusters without internet on compute nodes (e.g. Rorqual, Trillium)
 
-`prep1` and `prep2` download from the internet. On Nibi every node has
-access, so they run as Slurm jobs. On clusters whose compute nodes have none
-(Rorqual), set `environment.workers_have_internet: false` in your profile (and
-redo the setup). Then:
+`prep1` and `prep2` download from the internet. Where compute nodes have
+access, they run as Slurm jobs. On clusters whose compute nodes have none
+(Rorqual, Trillium), set `environment.workers_have_internet: false` in your
+profile (the default on Trillium) and redo the setup. Then:
 
 - **Run the downloads on a login node, with `bash` instead of `sbatch`.** They
   take hours, so start them inside `tmux` (or `screen`) so a dropped
@@ -344,21 +363,21 @@ redo the setup). Then:
   ```bash
   tmux new -s download
   cd "$DT_REPO"
-  bash jobs/prep1_download_mimic_nibi.sh                        # MIMIC-IV, ~10 GB
+  bash jobs/prep1_download_mimic.sh                        # MIMIC-IV, ~10 GB
   bash jobs/prep2_download_models.sh config/config_alliance_lean.yaml   # models, ~190 GB
   # Ctrl+B, D detaches; tmux attach -t download returns
   ```
 
-  Their output goes to the terminal; `| tee logs/prep1-login.out` keeps a copy.
-- **Submitted with `sbatch` by mistake,** they stop at once with that advice.
+  Their output goes to the terminal; `| tee "$DT_LOGS_ROOT/prep1-login.out"` keeps a copy.
+- **Submitted as a Slurm job by mistake,** they stop at once with that advice.
 - **`jobs/run_all.sh`** runs its `models` stage on the login node by itself,
-  logging to the run's folder in `logs/`; `--plan` shows it.
+  logging to the run's folder in `$DT_LOGS_ROOT`; `--plan` shows it.
 
 Login nodes are shared: these downloads are network-bound and light on CPU
 and memory, and on Rorqual the login node is also the documented data-transfer
 node. Alternatively, copy the files from a cluster that already has them with
-[Globus](https://docs.alliancecan.ca/wiki/Globus) (e.g. `alliancecan#nibi` →
-`alliancecan#rorqual`) into `$DT_MIMIC_DIR` and `$DT_OLLAMA_MODELS`; `prep2`
+[Globus](https://docs.alliancecan.ca/wiki/Globus) (e.g. from another
+cluster's collection to `alliancecan#rorqual`) into `$DT_MIMIC_DIR` and `$DT_OLLAMA_MODELS`; `prep2`
 then finds nothing to download.
 
 ### Live metrics on Weights & Biases (optional)
@@ -384,16 +403,21 @@ source .venv/bin/activate && wandb login && chmod 600 ~/.netrc
   values, stay ids or files. A failed forecast is reported only by type,
   e.g. "malformed forecast - see logs for details".
 - If W&B isn't reachable (not logged in, or no internet on the compute
-  nodes, as on Rorqual), the job logs one warning and runs without it; on
+  nodes, as on Rorqual and Trillium), the job logs one warning and runs without it; on
   such clusters keep `disable_wandb: true`.
 
 ---
 
 ## 5. Run the experiment step by step
 
-Every job is submitted from the repository base and takes the config as its
-first argument; without one, every job (and every `src/` script's
-`--config-file`) uses `config/config_alliance_lean.yaml`:
+Every job is submitted from the repository base with `bash jobs/submit.sh`
+and takes the config as its first argument; without one, every job (and
+every `src/` script's `--config-file`) uses `config/config_alliance_lean.yaml`.
+`jobs/submit.sh` passes `sbatch` options given before the script
+(`--option=value` form), sends the `.out` file to `paths.logs_dir`, and
+applies `slurm.gpu_jobs_only`. Plain `sbatch jobs/<job>.sh` still works
+where compute nodes can write the repo (the `.out` file then goes to
+`logs/` in the repo), but not on Trillium:
 
 ```bash
 cd "$DT_REPO"
@@ -404,13 +428,17 @@ TUNED=${CONFIG%.yaml}_tuned.yaml                 # written by step 3b
 
 | Step | Job | Resources (time limit) | Estimated work, lean / full |
 |---|---|---|---|
-| 1 Resolve variables to itemids | `step1_resolve_items_nibi.sh $CONFIG` | 8 CPU, 32 GB (1h15) | 5 min / 5 min |
-| 2 Extract cohort and panel | `step2_extract_cohort_nibi.sh $CONFIG` | 12 CPU, 192 GB (2h) | 10 min / 20 min |
-| 3b Tune hyperparameters | `step3b_tune_nibi.sh $CONFIG` | 1 H100, 12 CPU, 64 GB (8h) | 3.5 h / 12 h |
-| 3c Calibrate intervals | `step3c_calibrate_nibi.sh $TUNED` | 1 H100, 12 CPU, 64 GB (8h) | 10 h / 36 h |
-| 3 Run every condition | `step3_run_experiment_nibi.sh $TUNED` | 1 H100, 12 CPU, 64 GB (8h) | 14 h / 50 h |
-| 4 Statistical analysis | `step4_evaluate_results_nibi.sh $TUNED` | 4 CPU, 16 GB (1h30) | 30 min / 30 min |
+| 1 Resolve variables to itemids | `step1_resolve_items.sh $CONFIG` | 8 CPU, 32 GB (1h15) | 5 min / 5 min |
+| 2 Extract cohort and panel | `step2_extract_cohort.sh $CONFIG` | 12 CPU, 192 GB (2h) | 10 min / 20 min |
+| 3b Tune hyperparameters | `step3b_tune.sh $CONFIG` | 1 H100, 12 CPU, 64 GB (8h) | 3.5 h / 12 h |
+| 3c Calibrate intervals | `step3c_calibrate.sh $TUNED` | 1 H100, 12 CPU, 64 GB (8h) | 10 h / 36 h |
+| 3 Run every condition | `step3_run_experiment.sh $TUNED` | 1 H100, 12 CPU, 64 GB (8h) | 14 h / 50 h |
+| 4 Statistical analysis | `step4_evaluate_results.sh $TUNED` | 4 CPU, 16 GB (1h30) | 30 min / 30 min |
 
+The resources are the jobs' own `#SBATCH` lines, a conservative one-GPU
+share of a node. With
+`slurm.gpu_jobs_only` (Trillium) every job, the CPU-only ones included,
+runs on a quarter node instead: one H100, 24 cores, ~188 GiB, no `--mem`.
 Estimates are from [docs/runtime_estimates.md](docs/runtime_estimates.md)
 (at `OLLAMA_NUM_PARALLEL=8` with flash attention). Each step needs the
 previous one's output on disk, so start the next only after the previous
@@ -419,7 +447,7 @@ one has **finished successfully** (check its `.out` file).
 ### Step 1 — resolve the variable panel
 
 ```bash
-sbatch jobs/step1_resolve_items_nibi.sh $CONFIG
+bash jobs/submit.sh jobs/step1_resolve_items.sh $CONFIG
 ```
 
 Writes `<work dir>/cache/item_mapping.json`, where the work dir is
@@ -433,7 +461,7 @@ and edit the JSON to drop or add an itemid.
 ### Step 2 — extract the cohort and panel
 
 ```bash
-sbatch jobs/step2_extract_cohort_nibi.sh $CONFIG
+bash jobs/submit.sh jobs/step2_extract_cohort.sh $CONFIG
 ```
 
 One filtered pass each over `chartevents` and `labevents` (the two largest
@@ -445,7 +473,7 @@ disks, add `--tmp=<N>G` if it fails with "No space left on device".
 ### Step 3b — tune
 
 ```bash
-sbatch jobs/step3b_tune_nibi.sh $CONFIG
+bash jobs/submit.sh jobs/step3b_tune.sh $CONFIG
 ```
 
 A sequential search (grid in `config/tuning_grid.yaml`) on a 128-patient
@@ -457,12 +485,13 @@ least `min_improvement` without exceeding `max_fallback_rate`. Writes
 `$TUNED` (e.g. `config/config_alliance_lean_tuned.yaml`) and
 `<results dir>/tuning/` (`trials.csv`, `rounds.json`). The tuned config
 writes to `results_tuned` and `checkpoints_tuned`, so untuned results are
-kept.
+kept. With `workers_can_write_repo: false`, `$TUNED` is a symlink and the
+file itself is in `$DT_RESULTS_DIR/tuned-configs/`.
 
 ### Step 3c — calibrate the prediction intervals
 
 ```bash
-sbatch jobs/step3c_calibrate_nibi.sh $TUNED
+bash jobs/submit.sh jobs/step3c_calibrate.sh $TUNED
 ```
 
 Runs every condition on the remaining 322 validation patients (the
@@ -473,7 +502,7 @@ applies it to the test forecasts.
 ### Step 3 — run the experiment
 
 ```bash
-sbatch jobs/step3_run_experiment_nibi.sh $TUNED
+bash jobs/submit.sh jobs/step3_run_experiment.sh $TUNED
 ```
 
 Fits the baselines, builds the similarity index, and runs every condition
@@ -485,7 +514,7 @@ the tuned results dir.
 ### Step 4 — statistical analysis
 
 ```bash
-sbatch jobs/step4_evaluate_results_nibi.sh $TUNED
+bash jobs/submit.sh jobs/step4_evaluate_results.sh $TUNED
 ```
 
 RQ1 (orchestration vs. single model), RQ2 (critic ablation: plausibility
@@ -505,16 +534,20 @@ front, chain them with `afterany` — each starts when the previous ends,
 however it ended, and exits quickly if nothing is left to do:
 
 ```bash
-J=$(sbatch --parsable jobs/step3_run_experiment_nibi.sh $TUNED)
-J=$(sbatch --parsable --dependency=afterany:$J jobs/step3_run_experiment_nibi.sh $TUNED)
+J=$(bash jobs/submit.sh --parsable jobs/step3_run_experiment.sh $TUNED)
+J=$(bash jobs/submit.sh --parsable --dependency=afterany:$J jobs/step3_run_experiment.sh $TUNED)
 ```
 
 Lean needs about 2 jobs each for steps 3c and 3; full needs about 2 for 3b,
 6 for 3c and 8 for 3. Arguments after the config go to the Python script:
-`--full-refresh` discards the checkpoints and starts over. Changing a
-setting a checkpoint depends on (variables, cohort, a model's settings)
-stops the run with a message instead of mixing results; changes to prompts
-or code are **not** detected — use `--full-refresh` after those.
+`--full-refresh` discards the checkpoints and starts over. A checkpoint
+records the settings its predictions depend on: variables, cohort, the
+model's `llm` settings, the `similarity_agent`, `critic_agent` and
+`forecasting_agent` sections, and markers for rule changes in the code
+(e.g. the JSON-schema output format). Results made under different
+settings are not reused — the tuning cache simply recomputes them. Other
+code changes, including edits to the prompt text in `src/`, are **not**
+detected — use `--full-refresh` after those.
 
 ### The full variable set
 
@@ -549,7 +582,9 @@ Other options: `-i <seconds>` (how often Slurm is checked, default 120, at
 least 60), `--redo-extract` (re-run resolve and extract even if their
 outputs exist), `--redo calibrate,run,evaluate` (re-run finished stages,
 e.g. after adding conditions — checkpoints mean only new work is computed),
-`--profile <file>` (passed on to every job).
+`--profile <file>` (passed on to every job). The driver submits through
+`jobs/submit.sh`, so your profile's cluster settings apply; on Trillium,
+start it on the GPU login node (`trig-login01`).
 
 **How it behaves.**
 - **Downloads:** the `models` stage runs prep2 as a Slurm job, or on the login
@@ -562,7 +597,10 @@ e.g. after adding conditions — checkpoints mean only new work is computed),
   7 h of work, each with a time limit 1 h longer (8 h at most). A stage's
   jobs are submitted together as a chain: job *k+1* depends on `afternotok`
   of the earlier ones, so it runs only if they ran out of time or failed.
-  When a job completes, Slurm cancels the rest of the chain. If a chain
+  When a job completes, the driver cancels the rest of the chain (and,
+  except on Trillium, whose `sbatch` rejects `--kill-on-invalid-dep`, so
+  does Slurm — a backstop if the driver has died; on Trillium, cancel such
+  leftover pending jobs yourself). If a chain
   runs out without finishing, one more job is submitted, up to 3 times. Two
   failed jobs in a row stop the driver.
 - **Unattended (`--unattended`):** a stage that stops on failures is
@@ -592,12 +630,14 @@ bash jobs/monitor-job.sh <jobid>     # follow one job: state, why it's pending, 
 seff <jobid>                         # after it ends: CPU/memory actually used
 ```
 
-Job output goes to `logs/` in the repo (git-ignored), never the repo base:
+Job output goes to `paths.logs_dir` (`$DT_LOGS_ROOT`; default `logs/` in
+the repo, git-ignored; on `$SCRATCH` on Trillium), never the repo base:
 
-- **Jobs you submit yourself** write `logs/<job-name>-<jobid>.out`, and the
-  GPU jobs also `logs/ollama-<jobid>.log`.
+- **Jobs you submit with `jobs/submit.sh`** write
+  `$DT_LOGS_ROOT/<job-name>-<jobid>.out`, and the GPU jobs also
+  `ollama-<jobid>.log` next to it.
 - **Jobs submitted by `run_all.sh`** write both into one folder per driver
-  run, `logs/run_all-<scope>-<YYYYmmdd-HHMMSS>/`, so an unattended run's
+  run, `$DT_LOGS_ROOT/run_all-<scope>-<YYYYmmdd-HHMMSS>/`, so an unattended run's
   logs stay together. The driver announces it, and `--status` shows the
   latest one. The driver's own log and state stay in `run_all/`.
 
@@ -606,7 +646,7 @@ cluster, account and resolved locations.
 
 The download jobs (prep1, prep2) report their progress in their log as plain
 lines — one per 10 % of each file or model, or at least once a minute — so
-`tail -f logs/<job>.out` or `monitor-job.sh` shows how far they are. Run by
+`tail -f $DT_LOGS_ROOT/<job>.out` or `monitor-job.sh` shows how far they are. Run by
 hand in a terminal on a login node, they show the usual live progress bar
 instead (`jobs/progress_lib.sh`; `DT_PROGRESS_STEP` and `DT_PROGRESS_SECONDS`
 change the interval).
@@ -625,7 +665,11 @@ $DT_RESULTS_DIR/mimic-iv-twin-work/
   results_tuned/all_conditions_summary.csv, *_raw.npz      step 3
   results_tuned/statistical_analysis.json                   step 4 — RQ1–RQ3
   checkpoints/, checkpoints_tuned/   resume state (safe to delete once finished)
+$DT_RESULTS_DIR/tuned-configs/       the tuned configs, when workers_can_write_repo is false
 ```
+
+On Trillium `$DT_RESULTS_DIR` is on `$SCRATCH`, which is purged: copy the
+finished `mimic-iv-twin-work` folder to project space (Globus or `rsync`).
 
 ---
 
@@ -684,10 +728,11 @@ full eligible cohort once timed), a stronger model (`qwen2.5:32b` vs
 which the jobs also pass to Ollama as `OLLAMA_NUM_PARALLEL`;
 `performance.ollama_flash_attention` sets `OLLAMA_FLASH_ATTENTION`), a
 GPU-batched and larger LSTM baseline, checkpointing, and explicit DuckDB
-thread/memory limits matching step 2's Slurm request. `jobs/bench_ollama_nibi.sh`
+thread/memory limits matching step 2's Slurm request. `jobs/bench_ollama.sh`
 measures Ollama settings before you change them. The `#SBATCH` CPU/memory
-requests stay within the clusters' per-GPU bundles (Nibi: 14 cores per GPU;
-Rorqual: 16 cores, 124 GB).
+requests (12 cores per GPU job) are a conservative one-GPU share of a node
+(Rorqual's per-GPU bundle is 16 cores, 124 GB); check your cluster's with
+`sinfo`. On Trillium every job gets a quarter node.
 
 None of this unlocks the excluded full-scale (DT-GPT-size, ~35,000-patient)
 cloud replication: that design calls a third-party-hosted model over the
@@ -697,30 +742,29 @@ regardless of hardware.
 ### Project layout
 
 ```
-logs/                                     job .out files and Ollama logs (git-ignored); run_all-<scope>-<time>/ per run_all.sh run
+logs/                                     job .out files and Ollama logs by default (paths.logs_dir; git-ignored); run_all-<scope>-<time>/ per run_all.sh run
 jobs/setup_bash.sh                        reads your profile: locations, account, symlinks, .venv
 jobs/load_profile.sh                      sourced by every job: --profile, setup_bash.sh, PhysioNet credentials
 jobs/run_all.sh lean|full                 the whole pipeline as chained Slurm jobs (login node)
+jobs/submit.sh [opts] <job> [args]        submit one job adapted to the cluster (logs_dir, gpu_jobs_only)
 jobs/monitor-job.sh                       follow one job (login node)
-jobs/smoke_test_nibi.sh                   pre-flight: synthetic data, mocked LLM
-jobs/prep1_download_mimic_nibi.sh         download MIMIC-IV into $DT_MIMIC_DIR
-jobs/verify_mimic_nibi.sh                 check MIMIC-IV checksums
+jobs/smoke_test.sh                        pre-flight: synthetic data, mocked LLM
+jobs/prep1_download_mimic.sh              download MIMIC-IV into $DT_MIMIC_DIR
 jobs/prep2_download_models.sh <cfg>       download the Ollama models into $DT_OLLAMA_MODELS
-jobs/prep3_med42_nibi.sh                  one-off check that Med42-70B loads
-jobs/bench_ollama_nibi.sh                 Ollama throughput benchmark
-jobs/step1_resolve_items_nibi.sh <cfg>    step 1
-jobs/step2_extract_cohort_nibi.sh <cfg>   step 2
-jobs/step3b_tune_nibi.sh <cfg>            step 3b (GPU)
-jobs/step3c_calibrate_nibi.sh <tuned>     step 3c (GPU)
-jobs/step3_run_experiment_nibi.sh <tuned> step 3 (GPU)
-jobs/step4_evaluate_results_nibi.sh <tuned> step 4
+jobs/bench_ollama.sh                      Ollama throughput benchmark
+jobs/step1_resolve_items.sh <cfg>         step 1
+jobs/step2_extract_cohort.sh <cfg>        step 2
+jobs/step3b_tune.sh <cfg>                 step 3b (GPU)
+jobs/step3c_calibrate.sh <tuned>          step 3c (GPU)
+jobs/step3_run_experiment.sh <tuned>     step 3 (GPU)
+jobs/step4_evaluate_results.sh <tuned>   step 4
 jobs/ollama_lib.sh                        start/stop Ollama inside a GPU job
 jobs/progress_lib.sh                      log-friendly download progress (prep1, prep2)
 config/config_alliance_lean.yaml          5-variable panel (the default)
 config/config_alliance_full.yaml          19-variable panel
 config/tuning_grid.yaml                   hyperparameter search grid (step 3b)
 config/profile.sample.yml                 template for your profile, ~/.config/dt_profile.yml
-config/config_local.yaml                        original single-workstation (1080 Ti) config
+config/config_local.yaml                  original single-workstation (1080 Ti) config
 src/common.py                 config loading, logging, path/DuckDB helpers
 src/resolve_items.py          step 1 — itemid resolution
 src/extract_cohort.py         step 2 — cohort + panel extraction (DuckDB)
@@ -739,7 +783,7 @@ src/pipeline.py               orchestrates every condition
 src/checkpoint.py             checkpoints and their fingerprints
 src/metrics.py                evaluation metrics (sMAPE, KS, coverage, PVR, ...)
 src/tracking.py               optional W&B metrics (aggregates only)
-src/bench_ollama.py           Ollama benchmark (jobs/bench_ollama_nibi.sh)
+src/bench_ollama.py           Ollama benchmark (jobs/bench_ollama.sh)
 src/smoke_test.py             synthetic end-to-end test
 docs/                         walkthroughs of the jobs' settings, steps 1 and 2, runtime estimates
 ```
@@ -775,3 +819,13 @@ docs/                         walkthroughs of the jobs' settings, steps 1 and 2,
   the call counts as failed, and the error body is logged. Connection errors
   (the server is gone, e.g. at the job's time limit) stop the run instead of
   being recorded as fallbacks.
+- **Forecast length is enforced while decoding.** Forecasts and critic
+  corrections are requested with a JSON schema as Ollama's `format`, so each
+  variable gets exactly `forecast_horizon_hours` values.
+  - Before, with plain JSON mode, Qwen2.5-32B often ran on to 30–31 values
+    and the whole forecast fell back to naive: 118 of 128 forecasts in the
+    `similarity_context: trajectory` tuning trial (job 23206117).
+  - The schema fixes the shape, not the content: runaway straight-line
+    trends are now scored as the model's forecast instead of being hidden
+    behind the fallback.
+  - Checkpoints made before this change aren't reused.

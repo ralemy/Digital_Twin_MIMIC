@@ -83,7 +83,7 @@ environment:
   disable_wandb: true
 
   # Whether this cluster's compute (worker) nodes can reach the internet:
-  # true on Nibi, false on Rorqual and Trillium (see the cluster's Alliance
+  # false on Rorqual and Trillium (see the cluster's Alliance
   # wiki page). Leave empty for the default: false on Trillium, else true.
   # With false, the downloads (MIMIC-IV with prep1, the Ollama models with
   # prep2) run on a login node instead of as Slurm jobs — jobs/run_all.sh does
@@ -98,7 +98,7 @@ environment:
 
 physionet:
   # Your PhysioNet account, credentialed for MIMIC-IV — used only by
-  # jobs/prep1_download_mimic_nibi.sh. The password never leaves this file
+  # jobs/prep1_download_mimic.sh. The password never leaves this file
   # except into a private, temporary wgetrc inside the download job.
   username: ""
   password: ""

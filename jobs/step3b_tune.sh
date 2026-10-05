@@ -13,15 +13,15 @@
 # once scored, so after a time limit or failure just submit it again — or
 # chain a continuation up front:
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   JOB=$(sbatch --parsable jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml)
-#   sbatch --dependency=afterany:$JOB jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml
+#   JOB=$(bash jobs/submit.sh --parsable jobs/step3b_tune.sh config/config_alliance_lean.yaml)
+#   bash jobs/submit.sh --dependency=afterany:$JOB jobs/step3b_tune.sh config/config_alliance_lean.yaml
 # Other arguments after the config go to tune.py:
-#   sbatch jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml --grid config/my_grid.yaml
-#   sbatch jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml --full-refresh
+#   bash jobs/submit.sh jobs/step3b_tune.sh config/config_alliance_lean.yaml --grid config/my_grid.yaml
+#   bash jobs/submit.sh jobs/step3b_tune.sh config/config_alliance_lean.yaml --full-refresh
 #
 # Then: step3c (calibration) and step 3 with the tuned config, e.g.
-#   sbatch jobs/step3c_calibrate_nibi.sh config/config_alliance_lean_tuned.yaml
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_lean_tuned.yaml
+#   bash jobs/submit.sh jobs/step3c_calibrate.sh config/config_alliance_lean_tuned.yaml
+#   bash jobs/submit.sh jobs/step3_run_experiment.sh config/config_alliance_lean_tuned.yaml
 #
 # Locations, account and modules come from your profile
 # (~/.config/dt_profile.yml), read by jobs/setup_bash.sh. Submit from the repository base.
@@ -36,7 +36,7 @@
 set -euo pipefail
 
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 

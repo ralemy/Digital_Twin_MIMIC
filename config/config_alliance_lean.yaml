@@ -1,6 +1,6 @@
 # =============================================================================
 # LEAN SCOPE — the 5-variable panel of config_local.yaml, sized to run as a
-# Slurm batch job on an Alliance cluster (Nibi, Rorqual), one H100 80GB GPU
+# Slurm batch job on an Alliance cluster (e.g. Rorqual, Trillium), one H100 80GB GPU
 # per job, instead of on a local machine. Run with jobs/run_all.sh lean.
 #
 # Same variable panel and cohort criteria as config_local.yaml (the 1080 Ti
@@ -8,8 +8,7 @@
 # (max_patients 3000 vs 300), a stronger local model (qwen2.5:32b vs
 # llama3.1:8b) plus the comparison models under llm.variants, concurrent
 # LLM requests, a bigger LSTM baseline, checkpointing, and DuckDB/CPU
-# numbers capped to Nibi's documented "no more than 14 CPU cores per GPU"
-# guideline. No new variables and no cloud/API calls — the same experiment
+# numbers that fit a one-GPU share of a node. No new variables and no cloud/API calls — the same experiment
 # on different infrastructure.
 #
 # IMPORTANT — read before submitting a job with this file:
@@ -18,12 +17,11 @@
 #      Use Agreement, and the model licences must all be in place before
 #      this file is used with real data — see README.md, "Before you start:
 #      approvals and permissions". Nothing in this repo can check them.
-#   2. The CPU/GPU/RAM numbers below (cpus-per-task, mem, duckdb_threads)
-#      are conservative starting points based on Nibi's public "no more
-#      than 14 CPU cores per GPU" guidance, not a confirmed per-node spec
-#      sheet (Nibi's own wiki page was not reachable while preparing this
-#      file). Check `sinfo -o "%N %c %m %G"` on Nibi once you have an
-#      account session, and raise these if a full node's worth is actually
+#   2. The CPU/RAM numbers (the GPU jobs' --cpus-per-task=12 and --mem,
+#      duckdb_threads below) are conservative starting points for a
+#      one-GPU share of a node, not a per-cluster spec sheet. With slurm.gpu_jobs_only (Trillium) every job
+#      gets a quarter node instead (24 cores, ~188 GiB, no --mem). Check
+#      `sinfo -o "%N %c %m %G"` on your cluster and raise these if more is
 #      available to a single-GPU job.
 #   3. Ollama itself must already be running on 127.0.0.1:11434 before the
 #      Python steps run — the GPU jobs start it (jobs/ollama_lib.sh).
@@ -35,20 +33,19 @@ paths:
   # results are recorded. Both come from your profile (paths.mimic_dir,
   # paths.results_dir), via jobs/setup_bash.sh — change them there, not
   # here. Keep results on project space, not scratch (purged after 60 days
-  # of inactivity).
+  # of inactivity) — except where compute nodes can't write project space
+  # (Trillium): there they go on scratch, copied to project space when done.
   mimic_root: "mimic-iv"
   work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work"
   cache_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work/cache"
   results_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work/results"
 
 performance:
-  # Nibi's own guidance is "no more than 14 CPU cores" per GPU requested —
-  # the GPU jobs request --cpus-per-task=12, leaving 2 cores of
-  # headroom under that ceiling for Slurm/OS overhead rather than requesting
-  # right up against the documented limit.
+  # The GPU jobs request --cpus-per-task=12; 10 DuckDB threads leave 2 of
+  # them for Python and Slurm/OS overhead.
   duckdb_threads: 10
   duckdb_memory_limit_gb: 120      # leaves ~80 GB of step 2's 192000M Slurm allocation for pandas/Python; DuckDB spills to $SLURM_TMPDIR past this
-  llm_max_concurrent_requests: 8   # requests the pipeline sends at once; the Nibi jobs also start Ollama with OLLAMA_NUM_PARALLEL = this (jobs/ollama_lib.sh). 8 + flash attention: 1.69x the speed of 4 without, same fallbacks/sMAPE (benchmark job 23198298)
+  llm_max_concurrent_requests: 8   # requests the pipeline sends at once; the GPU jobs also start Ollama with OLLAMA_NUM_PARALLEL = this (jobs/ollama_lib.sh). 8 + flash attention: 1.69x the speed of 4 without, same fallbacks/sMAPE (benchmark job 23198298)
   ollama_flash_attention: true     # OLLAMA_FLASH_ATTENTION for the jobs' Ollama server (benchmarked in job 23198298)
   batch_predict_baselines: true
   # run_experiment.py checkpoints each condition every this many test
@@ -134,7 +131,7 @@ llm:
   # above and overrides only what it lists. A variant may set
   # `critic_variant: <other variant>` to give the critic agent that variant's
   # model instead of its own (see medgemma_gemma3_critic). Download them all
-  # with: sbatch jobs/prep2_download_models.sh <this config>
+  # with: bash jobs/submit.sh jobs/prep2_download_models.sh <this config>
   variants:
     baichuan_m2:
       # Baichuan-M2-32B: medical fine-tune of Qwen2.5-32B (Apache 2.0, not
@@ -160,8 +157,7 @@ llm:
       model: "llama3:70b-instruct-q4_K_M"                       # ~43GB
     llama_Med42_70b:
       # M42 Health's Llama3-Med42-70B (Med42-v2, clinical fine-tune of Llama 3
-      # 70B), community GGUF conversion. jobs/prep3_med42_nibi.sh checks it
-      # loads fully onto one H100.
+      # 70B), community GGUF conversion; fits fully onto one H100.
       model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
       alias: "med42:70b"
 

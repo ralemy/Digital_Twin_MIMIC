@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Slurm batch job — smoke test only. Run this BEFORE any real-data job to
-# confirm the codebase and your venv actually work on Nibi. No GPU, no
+# confirm the codebase and your venv actually work on this cluster. No GPU, no
 # Ollama, no MIMIC-IV data needed — src/smoke_test.py fabricates a small
 # synthetic cohort and mocks the LLM (see its own docstring). Finishes in
 # well under a minute of actual work; the time/resource limits below are
@@ -11,7 +11,7 @@
 # Locations, account and modules come from your profile
 # (~/.config/dt_profile.yml), read by jobs/setup_bash.sh. Submit from the repository base:
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   sbatch jobs/smoke_test_nibi.sh
+#   bash jobs/submit.sh jobs/smoke_test.sh
 # =============================================================================
 #SBATCH --job-name=mimic-twin-smoke
 #SBATCH --cpus-per-task=4
@@ -24,7 +24,7 @@ set -euo pipefail
 # Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 

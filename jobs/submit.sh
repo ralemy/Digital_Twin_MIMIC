@@ -3,8 +3,8 @@
 # Submit one of the job scripts, adapted to this cluster — run on a LOGIN NODE:
 #   bash jobs/submit.sh [sbatch options] jobs/<job>.sh [job arguments]
 # e.g.
-#   bash jobs/submit.sh jobs/step1_resolve_items_nibi.sh config/config_alliance_lean.yaml
-#   bash jobs/submit.sh --time=02:00:00 jobs/step3b_tune_nibi.sh config/config_alliance_lean.yaml
+#   bash jobs/submit.sh jobs/step1_resolve_items.sh config/config_alliance_lean.yaml
+#   bash jobs/submit.sh --time=02:00:00 jobs/step3b_tune.sh config/config_alliance_lean.yaml
 # sbatch options go before the script, in --option=value form. jobs/run_all.sh
 # submits every job through this script.
 #

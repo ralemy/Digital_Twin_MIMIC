@@ -15,7 +15,7 @@
 # Re-submitting after a timeout or failure continues where it left off
 # (`ollama pull` resumes partial downloads).
 #
-# The Nibi configs use six models (docs/llm_selection.docx):
+# The Alliance configs use six models (docs/llm_selection.docx):
 #   qwen2.5:32b-instruct-q8_0 (alias qwen2.5:32b)            ~35 GB  Ollama library
 #   Baichuan-M2-32B Q8_0      (alias baichuan-m2:32b)        ~35 GB  Hugging Face (bartowski)
 #   gemma3:27b                                               ~17 GB  Ollama library
@@ -31,9 +31,9 @@
 # its first stage.
 #
 # CPU-only, single-core and network bound — no GPU needed to download. Where
-# worker nodes have internet access (environment.workers_have_internet: true,
-# the default — e.g. Nibi), submit it with sbatch. Where they don't (false —
-# e.g. Rorqual), run it on a login node instead, inside tmux:
+# worker nodes have internet access (environment.workers_have_internet: true),
+# submit it with jobs/submit.sh. Where they don't (false — e.g. Rorqual,
+# Trillium), run it on a login node instead, inside tmux:
 #   cd "$DT_REPO" && bash jobs/prep2_download_models.sh <config>
 # As a Slurm job on such a cluster it stops at once with that advice;
 # jobs/run_all.sh's models stage runs it on the login node by itself.
@@ -44,8 +44,8 @@
 # the repository base:
 #   diskusage_report
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   sbatch jobs/prep2_download_models.sh                                # config/config_alliance_lean.yaml
-#   sbatch jobs/prep2_download_models.sh config/config_alliance_full.yaml
+#   bash jobs/submit.sh jobs/prep2_download_models.sh                                # config/config_alliance_lean.yaml
+#   bash jobs/submit.sh jobs/prep2_download_models.sh config/config_alliance_full.yaml
 # =============================================================================
 #SBATCH --job-name=mimic-twin-prep2-models
 #SBATCH --cpus-per-task=1
@@ -59,13 +59,13 @@ set -euo pipefail
 # Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
 # Downloading needs the internet. On clusters whose worker nodes have none
 # (environment.workers_have_internet: false in your profile), run this on a
-# login node with bash instead of sbatch; jobs/run_all.sh does that itself.
+# login node with bash instead of as a job; jobs/run_all.sh does that itself.
 if [ -n "${SLURM_JOB_ID:-}" ] && [ "$DT_WORKER_INTERNET" != 1 ]; then
     echo "== this cluster's worker nodes have no internet access (environment.workers_have_internet: false in your profile) — run it on a login node instead, e.g. inside tmux: cd \$DT_REPO && bash jobs/prep2_download_models.sh $* ==" >&2
     exit 1

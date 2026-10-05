@@ -6,7 +6,7 @@
 #   source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh"
 #   load_profile "$@" || exit 1
 #   set -- "${JOB_ARGS[@]}"
-# so submit from the repository base (`cd "$DT_REPO" && sbatch jobs/...`).
+# so submit from the repository base (`cd "$DT_REPO" && bash jobs/submit.sh jobs/...`).
 #
 # load_profile:
 #   - takes the job's arguments, removes `--profile <file>` (or

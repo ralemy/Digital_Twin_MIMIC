@@ -11,8 +11,8 @@
 #
 # Works for either scope — pass the config file as the first argument:
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_full.yaml
+#   bash jobs/submit.sh jobs/step3_run_experiment.sh config/config_alliance_lean.yaml
+#   bash jobs/submit.sh jobs/step3_run_experiment.sh config/config_alliance_full.yaml
 # Defaults to config_alliance_lean.yaml if omitted.
 # --time=08:00:00 below does NOT fit a whole run of either scope (see
 # docs/runtime_estimates.md): with every condition in the config, the
@@ -27,15 +27,15 @@
 # where it left off, losing at most one batch. To queue the continuation up
 # front, chain it — it starts when the first job ends, however it ends, and
 # exits quickly if there's nothing left to do:
-#   JOB=$(sbatch --parsable jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml)
-#   sbatch --dependency=afterany:$JOB jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml
+#   JOB=$(bash jobs/submit.sh --parsable jobs/step3_run_experiment.sh config/config_alliance_lean.yaml)
+#   bash jobs/submit.sh --dependency=afterany:$JOB jobs/step3_run_experiment.sh config/config_alliance_lean.yaml
 # Arguments after the config go to run_experiment.py; to discard the
 # checkpoints and start from scratch (e.g. after changing prompts or code):
-#   sbatch jobs/step3_run_experiment_nibi.sh config/config_alliance_lean.yaml --full-refresh
+#   bash jobs/submit.sh jobs/step3_run_experiment.sh config/config_alliance_lean.yaml --full-refresh
 #
 # Before the first submission of EITHER scope (and after adding a model or
 # alias to the config), download the models it needs with the same config:
-#   sbatch jobs/prep2_download_models.sh config/config_alliance_lean.yaml
+#   bash jobs/submit.sh jobs/prep2_download_models.sh config/config_alliance_lean.yaml
 # This job doesn't pull models itself: it aborts early with a clear message,
 # listing the setup commands, if any model or alias isn't found.
 # =============================================================================
@@ -51,7 +51,7 @@ set -euo pipefail
 # Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 

@@ -57,7 +57,7 @@ assigns each stay to train / val / test.
   3. age ≥ 18 (`min_age_years`);
   4. at least 50% of the expected hourly panel cells populated in the first
      48 hours (`min_panel_coverage`);
-  5. then, if more stays survive than `max_patients` (3000 on Nibi lean), a
+  5. then, if more stays survive than `max_patients` (3000 in the lean config), a
      random sample of 3000.
 - **Engine:** steps 1–3 and the raw-data scans run in DuckDB directly over the
   `.csv.gz` files. The hourly resampling, coverage filter and split run in

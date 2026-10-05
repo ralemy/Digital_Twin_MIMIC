@@ -1,6 +1,6 @@
 # =============================================================================
 # FULL SCOPE — the 19-variable panel, sized to run as a Slurm batch job on an
-# Alliance cluster (Nibi, Rorqual), one H100 80GB GPU per job.
+# Alliance cluster (e.g. Rorqual, Trillium), one H100 80GB GPU per job.
 #
 # Same sizing as config_alliance_lean.yaml, but a much larger physiological
 # variable panel: the 5 core variables (heart rate, respiratory rate, SpO2,
@@ -28,7 +28,7 @@ paths:
 performance:
   duckdb_threads: 10
   duckdb_memory_limit_gb: 120      # leaves ~80 GB of step 2's 192000M Slurm allocation for pandas/Python; DuckDB spills to $SLURM_TMPDIR past this
-  llm_max_concurrent_requests: 8   # requests the pipeline sends at once; the Nibi jobs also start Ollama with OLLAMA_NUM_PARALLEL = this (jobs/ollama_lib.sh). 8 + flash attention: 1.69x the speed of 4 without, same fallbacks/sMAPE (benchmark job 23198298)
+  llm_max_concurrent_requests: 8   # requests the pipeline sends at once; the GPU jobs also start Ollama with OLLAMA_NUM_PARALLEL = this (jobs/ollama_lib.sh). 8 + flash attention: 1.69x the speed of 4 without, same fallbacks/sMAPE (benchmark job 23198298)
   ollama_flash_attention: true     # OLLAMA_FLASH_ATTENTION for the jobs' Ollama server (benchmarked in job 23198298)
   batch_predict_baselines: true
   # run_experiment.py checkpoints each condition every this many test
@@ -195,7 +195,7 @@ llm:
   # above and overrides only what it lists. A variant may set
   # `critic_variant: <other variant>` to give the critic agent that variant's
   # model instead of its own (see medgemma_gemma3_critic). Download them all
-  # with: sbatch jobs/prep2_download_models.sh <this config>
+  # with: bash jobs/submit.sh jobs/prep2_download_models.sh <this config>
   variants:
     baichuan_m2:
       # Baichuan-M2-32B: medical fine-tune of Qwen2.5-32B (Apache 2.0, not
@@ -222,8 +222,7 @@ llm:
       num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
     llama_Med42_70b:
       # M42 Health's Llama3-Med42-70B (Med42-v2, clinical fine-tune of Llama 3
-      # 70B), community GGUF conversion. jobs/prep3_med42_nibi.sh checks it
-      # loads fully onto one H100.
+      # 70B), community GGUF conversion; fits fully onto one H100.
       model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
       alias: "med42:70b"
       num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits

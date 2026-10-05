@@ -20,10 +20,10 @@
 # failure simply continues where it left off.
 #
 # Single-core and network bound. Where worker nodes have internet access
-# (environment.workers_have_internet: true, the default — e.g. Nibi), submit it
-# with sbatch. Where they don't (false — e.g. Rorqual), run it on a login node
+# (environment.workers_have_internet: true), submit it with jobs/submit.sh.
+# Where they don't (false — e.g. Rorqual, Trillium), run it on a login node
 # instead, inside tmux since it takes hours:
-#   cd "$DT_REPO" && bash jobs/prep1_download_mimic_nibi.sh [version]
+#   cd "$DT_REPO" && bash jobs/prep1_download_mimic.sh [version]
 # As a Slurm job on such a cluster it stops at once with that advice.
 #
 # The destination (paths.mimic_dir) and the PhysioNet username and password
@@ -38,7 +38,7 @@
 #
 # Submit from the repository base:
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   sbatch jobs/prep1_download_mimic_nibi.sh [mimic-iv version, default 3.1]
+#   bash jobs/submit.sh jobs/prep1_download_mimic.sh [mimic-iv version, default 3.1]
 # =============================================================================
 #SBATCH --job-name=mimic-twin-download
 #SBATCH --cpus-per-task=1
@@ -51,15 +51,15 @@ set -euo pipefail
 # Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
 # Downloading needs the internet. On clusters whose worker nodes have none
 # (environment.workers_have_internet: false in your profile), run this on a
-# login node with bash instead of sbatch; jobs/run_all.sh does that itself.
+# login node with bash instead of as a job; jobs/run_all.sh does that itself.
 if [ -n "${SLURM_JOB_ID:-}" ] && [ "$DT_WORKER_INTERNET" != 1 ]; then
-    echo "== this cluster's worker nodes have no internet access (environment.workers_have_internet: false in your profile) — run it on a login node instead, e.g. inside tmux: cd \$DT_REPO && bash jobs/prep1_download_mimic_nibi.sh $* ==" >&2
+    echo "== this cluster's worker nodes have no internet access (environment.workers_have_internet: false in your profile) — run it on a login node instead, e.g. inside tmux: cd \$DT_REPO && bash jobs/prep1_download_mimic.sh $* ==" >&2
     exit 1
 fi
 

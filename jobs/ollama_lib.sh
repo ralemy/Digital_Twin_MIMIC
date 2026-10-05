@@ -75,7 +75,7 @@ print("\n".join(llm_models_in_use(cfg) if sys.argv[2] == "all" else [ollama_mode
     for model in $models; do
         if ! grep -Fxq "$model" <<< "$pulled"; then
             echo "== model '$model' not found in \$OLLAMA_MODELS ($OLLAMA_MODELS) — run first:" >&2
-            echo "==   sbatch jobs/prep2_download_models.sh $config" >&2
+            echo "==   bash jobs/submit.sh jobs/prep2_download_models.sh $config" >&2
             return 1
         fi
         echo "== model '$model' found =="

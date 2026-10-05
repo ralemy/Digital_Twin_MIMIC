@@ -11,8 +11,8 @@ error messages you can run into. Line numbers refer to
 
 ## What they're for
 
-Every job needs a few values that differ between Alliance clusters (Nibi,
-Rorqual, ...) and between users:
+Every job needs a few values that differ between Alliance clusters (Rorqual,
+Trillium, ...) and between users:
 
 | Location / setting | Profile key | Variable | Repo symlink |
 |---|---|---|---|
@@ -72,7 +72,7 @@ Line by line:
    ends the job.
 3. **`set -- "${JOB_ARGS[@]}"`** — replaces the job's arguments with what's
    left after `--profile` was taken out. In
-   `sbatch jobs/prep1_download_mimic_nibi.sh --profile ~/x.yml 3.1`, the
+   `bash jobs/submit.sh jobs/prep1_download_mimic.sh --profile ~/x.yml 3.1`, the
    job's `$1` afterwards is `3.1`.
 
 The job scripts carry no `#SBATCH --account`: `sbatch` takes the account
@@ -233,7 +233,7 @@ Submitted from the repository base:
 ```bash
 source ~/.bashrc               # after the setup — sets SBATCH_ACCOUNT=def-yourpi
 cd "$DT_REPO"
-sbatch jobs/prep1_download_mimic_nibi.sh 3.1
+bash jobs/submit.sh jobs/prep1_download_mimic.sh 3.1
 ```
 
 Inside the job:
@@ -255,7 +255,7 @@ Inside the job:
 
 | Message (start) | Cause | Fix |
 |---|---|---|
-| `jobs/load_profile.sh not found — submit from the repository base` | `sbatch` was run from another directory | `cd "$DT_REPO"`, then `sbatch jobs/...` |
+| `jobs/load_profile.sh not found — submit from the repository base` | `sbatch` was run from another directory | `cd "$DT_REPO"`, then `bash jobs/submit.sh jobs/...` |
 | `no profile at ...` | no profile yet (or a wrong `--profile` path) | `cp config/profile.sample.yml ~/.config/dt_profile.yml && chmod 600 ~/.config/dt_profile.yml`, then fill it in |
 | `profile ... is readable by others (mode 644)` | file permissions too open | `chmod 600 <file>` |
 | `setup has already run in this clone` | `setup.lock` exists | to redo the setup: `rm setup.lock && bash jobs/setup_bash.sh` |

@@ -1,5 +1,5 @@
 """
-Ollama throughput benchmark — run by jobs/bench_ollama_nibi.sh once per
+Ollama throughput benchmark — run by jobs/bench_ollama.sh once per
 Ollama setting (OLLAMA_NUM_PARALLEL, OLLAMA_FLASH_ATTENTION), against an
 already-running server started with that setting.
 

@@ -5,8 +5,8 @@
 # long runs (docs/runtime_estimates.md, section 3).
 #
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   sbatch jobs/bench_ollama_nibi.sh                       # lean config
-#   sbatch jobs/bench_ollama_nibi.sh config/config_alliance_lean.yaml
+#   bash jobs/submit.sh jobs/bench_ollama.sh                       # lean config
+#   bash jobs/submit.sh jobs/bench_ollama.sh config/config_alliance_lean.yaml
 #
 # For each setting it restarts Ollama with it and forecasts the same 64
 # validation patients (the tuning subset; the test split is never read) with
@@ -46,7 +46,7 @@
 set -uo pipefail     # no -e: one failing setting shouldn't stop the others
 
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 

@@ -238,7 +238,7 @@ GBM, LSTM) are unaffected.
    This fixes the 9 truncated forecasts in these logs. The run-time estimates
    don't change: normal forecasts are still ~700–900 tokens, and only the
    rare runaway forecast gets longer before stopping.
-6. **`jobs/step3_run_experiment_nibi.sh` is updated.**
+6. **`jobs/step3_run_experiment.sh` is updated.**
    - It now starts Ollama through `jobs/ollama_lib.sh`, which uses a per-job
      port and waits with curl retries instead of a `sleep` loop.
    - It checks models with `require_models`.
@@ -271,7 +271,7 @@ GBM, LSTM) are unaffected.
 
   - At 8 slots with flash attention, Med42-70B (63.6 GB) and qwen2.5 at
     12K context (60.2 GB) fit entirely on the GPU.
-  - The Nibi configs now set `llm_max_concurrent_requests: 8` and
+  - The Alliance configs now set `llm_max_concurrent_requests: 8` and
     `ollama_flash_attention: true`.
   - `EST_*` in `jobs/run_all.sh` assume 1.69× for the 27–32B models and
     1.3× for the 70B models, whose speed at 8 slots wasn't measured.

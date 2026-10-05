@@ -1,5 +1,5 @@
 # =============================================================================
-# Hyperparameter search grid for src/tune.py (jobs/step3b_tune_nibi.sh).
+# Hyperparameter search grid for src/tune.py (jobs/step3b_tune.sh).
 #
 # Sequential (coordinate) search: rounds run in order; each evaluates the
 # current best settings ("incumbent") and every trial below (incumbent +

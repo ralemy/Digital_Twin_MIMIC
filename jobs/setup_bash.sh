@@ -69,7 +69,7 @@
 #                     on a cluster] modules the jobs load before .venv
 #   DT_SYS_PYTHON     a python3 with PyYAML that works before any module is
 #                     loaded (reads the profile); found automatically
-#   DT_CLUSTER        $CC_CLUSTER (nibi, rorqual, trillium, ...), or "local"
+#   DT_CLUSTER        $CC_CLUSTER (rorqual, trillium, ...), or "local"
 #   DT_PROFILE        the profile that was read
 #   DT_LOG_DIR        where jobs write their Ollama logs: $DT_LOGS_ROOT unless
 #                     already set (jobs/run_all.sh sets a directory per run);

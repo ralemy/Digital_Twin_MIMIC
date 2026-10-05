@@ -12,15 +12,16 @@
 #
 # Works for either scope — pass the config file as the first argument:
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   sbatch jobs/step2_extract_cohort_nibi.sh config/config_alliance_lean.yaml
-#   sbatch jobs/step2_extract_cohort_nibi.sh config/config_alliance_full.yaml
+#   bash jobs/submit.sh jobs/step2_extract_cohort.sh config/config_alliance_lean.yaml
+#   bash jobs/submit.sh jobs/step2_extract_cohort.sh config/config_alliance_full.yaml
 # Defaults to config_alliance_lean.yaml if omitted.
 #
 # --cpus-per-task/--mem below pair with config_alliance_*.yaml's duckdb_threads=10
 # / duckdb_memory_limit_gb=120. --mem=192000M (~201 GB) must stay well above
 # the DuckDB limit: after DuckDB finishes, the script loads the cached panel
 # into pandas, and that needs its own headroom (~80 GB here). DuckDB spills
-# to the node-local $SLURM_TMPDIR (3 TB on Nibi CPU nodes) past its limit.
+# to the node-local $SLURM_TMPDIR past its limit (add --tmp=<N>G where
+# node-local disks are small).
 # If you change one, change the other; check actual peak usage afterwards
 # with `seff <jobid>` and trim --mem if it was far below.
 # =============================================================================
@@ -35,7 +36,7 @@ set -euo pipefail
 # Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 

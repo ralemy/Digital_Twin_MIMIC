@@ -150,7 +150,7 @@ def cfg_for_llm_variant(cfg: dict, variant: str | None) -> dict:
 
 
 def ollama_server_settings(cfg: dict) -> dict[str, str]:
-    """Environment for the `ollama serve` the Nibi jobs start
+    """Environment for the `ollama serve` the GPU jobs start
     (jobs/ollama_lib.sh): one request slot per request the pipeline sends at
     once (performance.llm_max_concurrent_requests), and flash attention per
     performance.ollama_flash_attention (default off). Neither is part of a

@@ -15,12 +15,12 @@
 #
 # Stages, each run by the job script already in jobs/:
 #   models     prep2_download_models.sh        <config>   (pulls only what's missing)
-#   resolve    step1_resolve_items_nibi.sh     <config>
-#   extract    step2_extract_cohort_nibi.sh    <config>
-#   tune       step3b_tune_nibi.sh             <config>   -> <config>_tuned.yaml
-#   calibrate  step3c_calibrate_nibi.sh        <tuned config>
-#   run        step3_run_experiment_nibi.sh    <tuned config>
-#   evaluate   step4_evaluate_results_nibi.sh  <tuned config>
+#   resolve    step1_resolve_items.sh     <config>
+#   extract    step2_extract_cohort.sh    <config>
+#   tune       step3b_tune.sh             <config>   -> <config>_tuned.yaml
+#   calibrate  step3c_calibrate.sh        <tuned config>
+#   run        step3_run_experiment.sh    <tuned config>
+#   evaluate   step4_evaluate_results.sh  <tuned config>
 # Jobs are submitted through jobs/submit.sh, which adapts them to the cluster
 # (on Trillium: run this from the GPU login node; every job takes one GPU).
 # lean = config/config_alliance_lean.yaml, full = config/config_alliance_full.yaml.
@@ -79,12 +79,12 @@ COOLDOWN_MIN=${RUN_ALL_COOLDOWN_MIN:-15}     # --unattended: first wait before a
 STAGES=(models resolve extract tune calibrate run evaluate)
 declare -A SCRIPT=(
     [models]=jobs/prep2_download_models.sh
-    [resolve]=jobs/step1_resolve_items_nibi.sh
-    [extract]=jobs/step2_extract_cohort_nibi.sh
-    [tune]=jobs/step3b_tune_nibi.sh
-    [calibrate]=jobs/step3c_calibrate_nibi.sh
-    [run]=jobs/step3_run_experiment_nibi.sh
-    [evaluate]=jobs/step4_evaluate_results_nibi.sh
+    [resolve]=jobs/step1_resolve_items.sh
+    [extract]=jobs/step2_extract_cohort.sh
+    [tune]=jobs/step3b_tune.sh
+    [calibrate]=jobs/step3c_calibrate.sh
+    [run]=jobs/step3_run_experiment.sh
+    [evaluate]=jobs/step4_evaluate_results.sh
 )
 # Estimated work in minutes (docs/runtime_estimates.md), for the 16 LLM
 # conditions in the configs at OLLAMA_NUM_PARALLEL=8 with flash attention

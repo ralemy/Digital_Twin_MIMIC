@@ -14,8 +14,8 @@
 # Resuming: forecasts are checkpointed per batch; after a time limit or
 # failure submit it again, or chain a continuation:
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   JOB=$(sbatch --parsable jobs/step3c_calibrate_nibi.sh config/config_alliance_lean_tuned.yaml)
-#   sbatch --dependency=afterany:$JOB jobs/step3c_calibrate_nibi.sh config/config_alliance_lean_tuned.yaml
+#   JOB=$(bash jobs/submit.sh --parsable jobs/step3c_calibrate.sh config/config_alliance_lean_tuned.yaml)
+#   bash jobs/submit.sh --dependency=afterany:$JOB jobs/step3c_calibrate.sh config/config_alliance_lean_tuned.yaml
 # Other arguments after the config go to calibrate.py (e.g. --full-refresh).
 # Defaults to config_alliance_lean.yaml if omitted; pass the tuned config
 # (config_alliance_lean_tuned.yaml, written by step3b) for the normal flow.
@@ -33,7 +33,7 @@
 set -euo pipefail
 
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 

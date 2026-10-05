@@ -10,8 +10,8 @@
 #
 # Works for either scope — pass the config file as the first argument:
 #   cd "$DT_REPO"     # after the setup (README, section 1): DT_REPO, SBATCH_ACCOUNT come from ~/.bashrc
-#   sbatch jobs/step4_evaluate_results_nibi.sh config/config_alliance_lean.yaml
-#   sbatch jobs/step4_evaluate_results_nibi.sh config/config_alliance_full.yaml
+#   bash jobs/submit.sh jobs/step4_evaluate_results.sh config/config_alliance_lean.yaml
+#   bash jobs/submit.sh jobs/step4_evaluate_results.sh config/config_alliance_full.yaml
 # Defaults to config_alliance_lean.yaml if omitted.
 #
 # Writes <results_dir>/statistical_analysis.json.
@@ -27,7 +27,7 @@ set -euo pipefail
 # Settings come from your profile, through jobs/load_profile.sh; the
 # job's arguments (minus any --profile <file>) are its own.
 source "${SLURM_SUBMIT_DIR:-$PWD}/jobs/load_profile.sh" \
-    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && sbatch jobs/<job>.sh ==" >&2; exit 1; }
+    || { echo "== jobs/load_profile.sh not found — submit from the repository base: cd \$DT_REPO && bash jobs/submit.sh jobs/<job>.sh ==" >&2; exit 1; }
 load_profile "$@" || exit 1
 set -- "${JOB_ARGS[@]}"
 
