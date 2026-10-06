@@ -15,24 +15,42 @@ import numpy as np
 
 from baselines import GBMBaseline, LSTMBaseline, naive_forecast
 from checkpoint import ConditionCheckpoint, RunCheckpoint, model_fingerprint
-from common import LLM_CONDITIONS, cfg_for_llm_variant, critic_variant, get_logger, llm_variants_in_use, split_condition
+from common import (LLM_CONDITIONS, cfg_for_llm_variant, critic_variant, get_logger, llm_variants_in_use,
+                    split_condition, valid_ranges)
 from critic_agent import CriticAgent
 from forecasting_agent import ForecastingAgent
+from harmonization_agent import naive_fill, reference_stats
 from llm_client import LocalLLM
 from similarity_agent import SimilarityAgent
 
 log = get_logger("pipeline")
 
 
-def _llm_forecast_to_arrays(result: dict, variables: list[str], horizon_hours: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _llm_forecast_to_arrays(result: dict, variables: list[str], horizon_hours: int) -> tuple[np.ndarray, np.ndarray]:
+    """(forecast, half-width), both (horizon_hours, n_variables). A
+    variable's half-width is one number or one per hour
+    (forecasting_agent.interval)."""
     forecast = np.full((horizon_hours, len(variables)), np.nan)
-    halfwidth = np.zeros(len(variables))
+    halfwidth = np.ones((horizon_hours, len(variables)))
     for i, var in enumerate(variables):
         vals = result["forecast"].get(var)
         if vals is not None and len(vals) == horizon_hours:
             forecast[:, i] = vals
-        halfwidth[i] = result.get("interval_halfwidth", {}).get(var, 1.0)
-    return forecast, halfwidth[None, :].repeat(horizon_hours, axis=0), halfwidth
+        hw = result.get("interval_halfwidth", {}).get(var, 1.0)
+        if np.ndim(hw) == 0 or len(hw) == horizon_hours:
+            halfwidth[:, i] = hw
+    return forecast, halfwidth
+
+
+def _clip_to_valid(forecast: np.ndarray, cfg: dict) -> np.ndarray:
+    """A GBM or LSTM forecast clipped to each variable's valid range: a
+    per-hour regressor can otherwise output far outside it (MAP -2759 to
+    5395 in the Trillium lean run, fitted on artefact targets)."""
+    ranges = valid_ranges(cfg)
+    out = forecast.copy()
+    for i, var in enumerate(v["name"] for v in cfg["variables"]):
+        out[..., i] = np.clip(out[..., i], *ranges[var])
+    return out
 
 
 def run_condition(
@@ -47,6 +65,8 @@ def run_condition(
     """
     Returns {"y_true": ..., "y_pred": ..., "y_lower": ..., "y_upper": ...,
              "plausibility_violations_precritic": int or None,
+             "critic_clipped": int or None (of those, the values the critic
+                               clipped instead of the LLM correcting them),
              "llm_fallbacks": int or None,
              "llm_filled": per-variable int array or None}
     the first four shaped (n_patients, horizon_hours, n_variables).
@@ -79,6 +99,7 @@ def run_condition(
     y_lower = np.full_like(y_true, np.nan)
     y_upper = np.full_like(y_true, np.nan)
     total_precritic_violations = 0
+    total_clipped = 0
     total_fallbacks = 0
     total_filled = np.zeros(y_true.shape[2], dtype=int)
     n_resumed = 0
@@ -130,6 +151,7 @@ def run_condition(
         rows = slice(start, start + len(batch_ids))
         y_pred[rows], y_lower[rows], y_upper[rows] = batch["y_pred"], batch["y_lower"], batch["y_upper"]
         total_precritic_violations += batch["violations"]
+        total_clipped += batch["clipped"]
         total_fallbacks += batch["fallbacks"]
         total_filled += batch["filled"]
 
@@ -144,6 +166,7 @@ def run_condition(
         "y_upper": y_upper,
         "stay_ids": stay_ids,
         "plausibility_violations_precritic": total_precritic_violations if "full_pipeline" in base else None,
+        "critic_clipped": total_clipped if "full_pipeline" in base else None,
         "llm_fallbacks": total_fallbacks if base in LLM_CONDITIONS else None,
         "llm_filled": total_filled if base in LLM_CONDITIONS else None,
         "llm_errors": errors_so_far(),
@@ -169,8 +192,8 @@ def _predict_batch(
 ) -> dict:
     """Predictions for one batch of test patients: {"y_pred", "y_lower",
     "y_upper"} shaped (len(batch_ids), horizon_hours, n_variables), plus this
-    batch's pre-critic plausibility "violations", LLM "fallbacks" and
-    per-variable "filled" counts."""
+    batch's pre-critic plausibility "violations", values the critic
+    "clipped", LLM "fallbacks" and per-variable "filled" counts."""
     base, variant = split_condition(condition)
     llm_agents = fitted_models["variants"][variant] if variant else fitted_models
     variables = [v["name"] for v in cfg["variables"]]
@@ -183,10 +206,12 @@ def _predict_batch(
     y_lower = np.full(shape, np.nan)
     y_upper = np.full(shape, np.nan)
     total_precritic_violations = 0
+    total_clipped = 0
 
     if base == "naive":
+        fill = naive_fill(fitted_models.get("reference"), variables)
         for pi, sid in enumerate(batch_ids):
-            r = naive_forecast(test_tensors[sid]["obs"], horizon_hours)
+            r = naive_forecast(test_tensors[sid]["obs"], horizon_hours, fill)
             y_pred[pi] = r["forecast_array"]
             y_lower[pi] = r["forecast_array"] - r["halfwidth_array"][None, :]
             y_upper[pi] = r["forecast_array"] + r["halfwidth_array"][None, :]
@@ -198,9 +223,10 @@ def _predict_batch(
         gbm_model: GBMBaseline = fitted_models["gbm"]
         for pi, sid in enumerate(batch_ids):
             r = gbm_model.predict(test_tensors[sid]["obs"])
-            y_pred[pi] = r["forecast_array"]
-            y_lower[pi] = r["forecast_array"] - r["halfwidth_array"][None, :]
-            y_upper[pi] = r["forecast_array"] + r["halfwidth_array"][None, :]
+            fcast = _clip_to_valid(r["forecast_array"], cfg)
+            y_pred[pi] = fcast
+            y_lower[pi] = fcast - r["halfwidth_array"][None, :]
+            y_upper[pi] = fcast + r["halfwidth_array"][None, :]
 
     elif base == "lstm":
         lstm_model: LSTMBaseline = fitted_models["lstm"]
@@ -211,15 +237,17 @@ def _predict_batch(
             # forward pass barely uses the GPU at all.
             obs_stack = np.stack([test_tensors[sid]["obs"] for sid in batch_ids])
             batch = lstm_model.predict_batch(obs_stack)
-            y_pred[:] = batch["forecast_array"]
-            y_lower[:] = batch["forecast_array"] - batch["halfwidth_array"][:, None, :]
-            y_upper[:] = batch["forecast_array"] + batch["halfwidth_array"][:, None, :]
+            fcast = _clip_to_valid(batch["forecast_array"], cfg)
+            y_pred[:] = fcast
+            y_lower[:] = fcast - batch["halfwidth_array"][:, None, :]
+            y_upper[:] = fcast + batch["halfwidth_array"][:, None, :]
         else:
             for pi, sid in enumerate(batch_ids):
                 r = lstm_model.predict(test_tensors[sid]["obs"])
-                y_pred[pi] = r["forecast_array"]
-                y_lower[pi] = r["forecast_array"] - r["halfwidth_array"][None, :]
-                y_upper[pi] = r["forecast_array"] + r["halfwidth_array"][None, :]
+                fcast = _clip_to_valid(r["forecast_array"], cfg)
+                y_pred[pi] = fcast
+                y_lower[pi] = fcast - r["halfwidth_array"][None, :]
+                y_upper[pi] = fcast + r["halfwidth_array"][None, :]
 
     elif base == "single_model_llm":
         # DT-GPT-style: same LLM as the pipeline, no similarity conditioning, no critic.
@@ -236,7 +264,7 @@ def _predict_batch(
             # in the config and the matching OLLAMA_NUM_PARALLEL note in the
             # README. Results are collected via map(), which preserves order,
             # so y_pred[pi] still lines up with batch_ids[pi].
-            for pi, (fcast, interval, _) in enumerate(ex.map(_single_model_worker, batch_ids)):
+            for pi, (fcast, interval) in enumerate(ex.map(_single_model_worker, batch_ids)):
                 y_pred[pi] = fcast
                 y_lower[pi] = fcast - interval
                 y_upper[pi] = fcast + interval
@@ -259,13 +287,13 @@ def _predict_batch(
             if use_critic:
                 reviewed = critic.review(raw)
                 final_forecast = {"forecast": reviewed["forecast"], "interval_halfwidth": raw["interval_halfwidth"]}
-                violations = reviewed["violations_before_correction"]
+                violations, clipped = reviewed["violations_before_correction"], reviewed["clipped_values"]
             else:
                 final_forecast = raw
-                violations = 0
+                violations = clipped = 0
 
-            fcast, interval, _ = _llm_forecast_to_arrays(final_forecast, variables, horizon_hours)
-            return fcast, interval, violations
+            fcast, interval = _llm_forecast_to_arrays(final_forecast, variables, horizon_hours)
+            return fcast, interval, violations, clipped
 
         # A critic on another model (critic_variant): forecast the whole batch,
         # then review it, so Ollama switches models twice per batch. Run per
@@ -285,11 +313,12 @@ def _predict_batch(
                 results = ex.map(_critic_worker, raws)
             else:
                 results = ex.map(lambda sid: _critic_worker(_forecast_worker(sid)), batch_ids)
-            for pi, (fcast, interval, violations) in enumerate(results):
+            for pi, (fcast, interval, violations, clipped) in enumerate(results):
                 y_pred[pi] = fcast
                 y_lower[pi] = fcast - interval
                 y_upper[pi] = fcast + interval
                 total_precritic_violations += violations
+                total_clipped += clipped
 
     else:
         raise ValueError(f"Unknown condition '{condition}'")
@@ -299,6 +328,7 @@ def _predict_batch(
         "y_lower": y_lower,
         "y_upper": y_upper,
         "violations": int(total_precritic_violations),
+        "clipped": int(total_clipped),
         "fallbacks": int(llm_agents["forecaster"].n_fallbacks - fallbacks_before) if base in LLM_CONDITIONS else 0,
         "filled": np.array([llm_agents["forecaster"].n_filled[v] - filled_before[v] for v in variables]
                            if base in LLM_CONDITIONS else np.zeros(len(variables)), dtype=int),
@@ -332,7 +362,9 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
     from it; the similarity index is cheap and simply refitted."""
     variables = [v["name"] for v in cfg["variables"]]
     horizon_hours = cfg["cohort"]["forecast_horizon_hours"]
-    fitted = {}
+    # The training cohort's per-variable median/IQR: fills variables a
+    # patient has no observation of (naive, LLM fallback) and anchors prompts.
+    fitted = {"reference": reference_stats(train_tensors, variables)}
 
     if cfg["baselines"]["run_gbm"]:
         gbm_path = checkpoint.model_path("gbm", model_fingerprint(cfg, "gbm", train_tensors), "gbm.pkl") if checkpoint else None
@@ -358,10 +390,10 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
     used_variants = [v for v in in_use if v is not None]
 
     if needs_default_llm:
-        fitted.update(_build_llm_agents(cfg, None))
+        fitted.update(_build_llm_agents(cfg, None, fitted["reference"]))
     fitted["variants"] = {}
     for variant in used_variants:
-        fitted["variants"][variant] = _build_llm_agents(cfg, variant)
+        fitted["variants"][variant] = _build_llm_agents(cfg, variant, fitted["reference"])
         llm = fitted["variants"][variant]["forecaster"].llm
         log.info("LLM variant '%s' -> model %s (pulled as %s)", variant, llm.model, llm.source_model)
     if needs_default_llm or used_variants:
@@ -370,7 +402,7 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
     return fitted
 
 
-def _build_llm_agents(cfg: dict, variant: str | None) -> dict:
+def _build_llm_agents(cfg: dict, variant: str | None, reference: dict | None = None) -> dict:
     """Forecaster and critic for one LLM variant (None = llm.model). They
     share one LocalLLM, unless the variant sets `critic_variant`: then the
     critic gets its own, built from that variant's llm settings."""
@@ -381,6 +413,6 @@ def _build_llm_agents(cfg: dict, variant: str | None) -> dict:
     if cv is not None:
         log.info("LLM variant '%s': critic uses variant '%s' (model %s).", variant, cv, critic_llm.model)
     return {
-        "forecaster": ForecastingAgent(llm, vcfg),
+        "forecaster": ForecastingAgent(llm, vcfg, reference),
         "critic": CriticAgent(critic_llm, vcfg, enabled=vcfg["critic_agent"]["enabled"]),
     }

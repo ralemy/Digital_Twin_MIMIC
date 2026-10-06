@@ -13,10 +13,11 @@
 # similarity_agent.k_neighbors). The tuned settings apply to every model,
 # including the llm.variants used in the model comparison.
 #
-# Cost (Qwen2.5-32B, 128 patients = 4 batches): ~20 min per LLM condition per
-# setting not already evaluated; GBM/LSTM trials take about a minute.
+# Cost (Qwen2.5-32B, 128 patients = 4 batches): ~10-20 min per LLM condition
+# per setting not already evaluated; GBM/LSTM trials take about a minute.
 # Settings already evaluated (e.g. the incumbent of an earlier round) are
-# cached and cost nothing. This grid is ~6 GPU-hours from scratch.
+# cached and cost nothing. This grid is 27 LLM evaluations, ~7 GPU-hours from
+# scratch (the Trillium lean tune took 3.5 h for the first 14).
 # =============================================================================
 tuning:
   n_tune_patients: 128        # validation stays used for tuning; the rest (322) are kept for calibrate.py
@@ -55,6 +56,25 @@ tuning:
       trials:
         k10: {similarity_agent.k_neighbors: 10}
         k50: {similarity_agent.k_neighbors: 50}
+
+    # --- trends and anchors (affect every LLM condition, so both are scored) ---
+    # On Trillium the single-model forecasts continued trend_slope ~1:1 for
+    # 24 h, while the patients reverted toward their mean.
+    - name: trend_hint
+      conditions: [single_model_llm, full_pipeline]
+      trials:
+        no_slope: {forecasting_agent.trend_hint: none}
+        damped_note: {forecasting_agent.trend_hint: damped}
+    - name: drift_damping             # each hour's change from hour 1, x lambda
+      conditions: [single_model_llm, full_pipeline]
+      trials:
+        damp050: {forecasting_agent.drift_damping: 0.5}
+        damp025: {forecasting_agent.drift_damping: 0.25}
+        flat: {forecasting_agent.drift_damping: 0.0}
+    - name: cohort_anchor             # the training cohort's median [IQR] in the prompt
+      conditions: [single_model_llm, full_pipeline]
+      trials:
+        anchor: {forecasting_agent.cohort_anchor: true}
 
     # --- prompt and decoding (affect every LLM condition, so both are scored) --
     - name: prompt

@@ -132,8 +132,10 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
             "factors": factors,
             "coverage_before": interval_coverage(result["y_true"], result["y_lower"], result["y_upper"]),
             "coverage_after": interval_coverage(result["y_true"], lo, hi),
-            "width_before": mean_interval_width(result["y_lower"], result["y_upper"]),
-            "width_after": mean_interval_width(lo, hi),
+            # Per variable, each in its own unit.
+            "width_before": {var: mean_interval_width(result["y_lower"][..., i], result["y_upper"][..., i])
+                             for i, var in enumerate(variables)},
+            "width_after": {var: mean_interval_width(lo[..., i], hi[..., i]) for i, var in enumerate(variables)},
             "llm_fallbacks": result["llm_fallbacks"],
             "llm_fallback_rate": (result["llm_fallbacks"] / max(1, len(result["stay_ids"]))
                                   if result["llm_fallbacks"] is not None else None),
@@ -156,8 +158,7 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
         c = output["conditions"][condition]
         tracking.log_metrics({"calibrate/conditions_done": len(output["conditions"]),
                               **{f"calibrate/{condition}/{k}": c[k] for k in
-                                 ("coverage_before", "coverage_after", "width_before", "width_after")
-                                 if c[k] is not None}})
+                                 ("coverage_before", "coverage_after") if c[k] is not None}})
 
     log.info("Calibration factors written to %s — evaluate_results.py applies them to the test forecasts.", out_path)
 

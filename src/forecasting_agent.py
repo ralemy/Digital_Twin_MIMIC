@@ -18,7 +18,25 @@ If the output is valid but leaves out some of the variables (typically a
 sparsely measured lab such as lactate), only those variables get the naive
 forecast and interval; the model's forecasts for the others are kept. Both
 are counted per condition (n_fallbacks, n_filled) and reported with the
-results.
+results. A variable the patient has no observation of is filled with the
+training cohort's median (reference stats from pipeline.fit_models), not 0.
+
+Prompt and output options (the `forecasting_agent:` config section, tuned by
+src/tune.py; each default reproduces the original prompt):
+  trend_hint      slope   : last, mean, std and trend_slope per variable
+                  none    : no trend_slope
+                  damped  : trend_slope, plus a note that ICU vital signs
+                            revert toward the mean rather than continue a trend
+                  (Trillium lean run: single-model forecasts continued the
+                  slope ~1:1 for 24 h while the patients reverted to the mean.)
+  drift_damping   1.0     : the forecast as given; lambda < 1 shrinks each
+                            hour's change from hour 1 by lambda (0 = flat)
+  cohort_anchor   false   : true adds the training cohort's median [IQR] of
+                            every variable to the prompt
+  interval        constant: one interval half-width per variable
+                  per_hour: one per hour (24 more numbers per variable)
+                  endpoints: one at the first and one at the last hour,
+                            interpolated in between
 """
 from __future__ import annotations
 
@@ -29,12 +47,15 @@ import numpy as np
 import requests
 
 from common import get_logger
-from harmonization_agent import summarize_observation
+from harmonization_agent import naive_fill, summarize_observation
 from llm_client import LocalLLM, extract_json_block
 
 log = get_logger("forecasting_agent")
 
-SYSTEM_PROMPT = (
+TREND_HINTS = ("slope", "none", "damped")
+INTERVAL_MODES = ("constant", "per_hour", "endpoints")
+
+_SYSTEM_PROMPT_START = (
     "You are a clinical forecasting assistant supporting intensive-care-unit "
     "research. You are given a summary of a patient's vital-sign and laboratory "
     "trend over the last observation window and must forecast the same "
@@ -44,25 +65,73 @@ SYSTEM_PROMPT = (
     "Respond with STRICT JSON only, no prose, no markdown fences, in exactly "
     "this shape: "
     '{"forecast": {"<variable>": [<hour_1>, <hour_2>, ...]}, '
-    '"interval_halfwidth": {"<variable>": <number>}}. '
-    "interval_halfwidth is a single number per variable representing your "
-    "uncertainty (the forecast is assumed centered, i.e. value +/- halfwidth "
-    "covers your ~90% confidence range for every hour of that variable)."
+)
+_INTERVAL_INSTRUCTIONS = {
+    "constant": (
+        '"interval_halfwidth": {"<variable>": <number>}}. '
+        "interval_halfwidth is a single number per variable representing your "
+        "uncertainty (the forecast is assumed centered, i.e. value +/- halfwidth "
+        "covers your ~90% confidence range for every hour of that variable)."),
+    "per_hour": (
+        '"interval_halfwidth": {"<variable>": [<hour_1>, <hour_2>, ...]}}. '
+        "interval_halfwidth gives, for every hour, the half-width of your ~90% "
+        "confidence range around that hour's forecast (value +/- halfwidth). "
+        "Uncertainty usually grows the further ahead the hour is."),
+    "endpoints": (
+        '"interval_halfwidth": {"<variable>": {"start": <number>, "end": <number>}}}. '
+        "interval_halfwidth gives the half-width of your ~90% confidence range "
+        "around the forecast (value +/- halfwidth) at the first hour (start) and "
+        "at the last hour (end); the hours in between are interpolated. "
+        "Uncertainty usually grows the further ahead the hour is."),
+}
+
+
+def system_prompt(interval: str = "constant") -> str:
+    return _SYSTEM_PROMPT_START + _INTERVAL_INSTRUCTIONS[interval]
+
+
+SYSTEM_PROMPT = system_prompt("constant")   # the original prompt
+
+DAMPED_TREND_NOTE = (
+    "Note on trends: over the next day, ICU vital signs and labs usually stay "
+    "near their current level or drift back toward the patient's recent "
+    "average. A trend seen in the observation window rarely continues at the "
+    "same rate for 24 hours, so do not extend trend_slope in a straight line."
 )
 
 
-def _format_observation_block(obs_summary: dict, units: dict[str, str]) -> str:
+def _format_observation_block(obs_summary: dict, units: dict[str, str], trend: bool = True,
+                              reference: dict[str, dict] | None = None) -> str:
+    """One line per variable. An unobserved variable is named with the
+    cohort's typical value when `reference` is given, so the model has
+    something to anchor on (without it, models often forecast 0)."""
     lines = []
     for var, s in obs_summary.items():
         unit = units.get(var, "")
         if s["n_obs"] == 0:
-            lines.append(f"- {var}: no observations in window")
+            r = (reference or {}).get(var) or {}
+            if r.get("median") is not None:
+                lines.append(f"- {var}: not measured in this window; typical value in this ICU cohort: "
+                             f"median {r['median']:.1f}{unit} (interquartile range {r['q1']:.1f}–{r['q3']:.1f})")
+            else:
+                lines.append(f"- {var}: no observations in window")
         else:
+            slope = f", trend_slope={s['slope']:+.2f}/hr" if trend else ""
             lines.append(
                 f"- {var}: last={s['last']:.1f}{unit}, mean={s['mean']:.1f}{unit}, "
-                f"std={s['std']:.1f}, trend_slope={s['slope']:+.2f}/hr, n_obs={s['n_obs']}"
+                f"std={s['std']:.1f}{slope}, n_obs={s['n_obs']}"
             )
     return "\n".join(lines)
+
+
+def _format_cohort_anchor(reference: dict[str, dict], variables: list[str], units: dict[str, str]) -> str:
+    """The training cohort's median [IQR] per variable (cohort_anchor)."""
+    lines = [f"- {var}: {r['median']:.1f} [{r['q1']:.1f}–{r['q3']:.1f}] {units.get(var, '')}".rstrip()
+             for var in variables if (r := reference.get(var) or {}).get("median") is not None]
+    if not lines:
+        return ""
+    return ("\n\nTypical values in this ICU cohort (all training patients, median "
+            "[interquartile range]), for reference:\n" + "\n".join(lines))
 
 
 def error_kind(e: Exception) -> str:
@@ -76,14 +145,20 @@ def error_kind(e: Exception) -> str:
     return "malformed_forecast"
 
 
-def _naive_fallback(obs: np.ndarray, horizon_hours: int, variables: list[str]) -> dict:
+def _naive_fallback(obs: np.ndarray, horizon_hours: int, variables: list[str],
+                    fill: list[tuple[float, float]] | None = None) -> dict:
+    """Last value carried forward (baselines.naive_forecast): an unobserved
+    variable gets fill[i] = (training median, half-width), or 0 without it."""
     forecast, halfwidth = {}, {}
     for i, var in enumerate(variables):
         valid = obs[:, i][~np.isnan(obs[:, i])]
-        last = float(valid[-1]) if len(valid) else 0.0
-        std = float(np.std(valid)) if len(valid) > 1 else 1.0
-        forecast[var] = [last] * horizon_hours
-        halfwidth[var] = max(std, 1e-3) * 1.5
+        if len(valid) == 0 and fill is not None:
+            value, hw = fill[i]
+        else:
+            value = float(valid[-1]) if len(valid) else 0.0
+            hw = max(float(np.std(valid)) if len(valid) > 1 else 1.0, 1e-3) * 1.5
+        forecast[var] = [float(value)] * horizon_hours
+        halfwidth[var] = float(hw)
     return {"forecast": forecast, "interval_halfwidth": halfwidth}
 
 
@@ -124,7 +199,16 @@ def _format_similarity_trajectory(ctx: dict, variables: list[str], units: dict[s
             "own data are sparse:\n" + "\n".join(lines))
 
 
-def forecast_schema(variables: list[str], horizon_hours: int) -> dict:
+def _halfwidth_schema(interval: str, horizon_hours: int) -> dict:
+    if interval == "per_hour":
+        return {"type": "array", "items": {"type": "number"}, "minItems": horizon_hours, "maxItems": horizon_hours}
+    if interval == "endpoints":
+        return {"type": "object", "properties": {"start": {"type": "number"}, "end": {"type": "number"}},
+                "required": ["start", "end"]}
+    return {"type": "number"}
+
+
+def forecast_schema(variables: list[str], horizon_hours: int, interval: str = "constant") -> dict:
     """JSON schema for the forecast, passed to Ollama as `format` so decoding
     is constrained to exactly horizon_hours values per variable. With plain
     JSON mode, Qwen2.5-32B often ran on to 30-31 values (job 23206117: 118
@@ -141,7 +225,7 @@ def forecast_schema(variables: list[str], horizon_hours: int) -> dict:
             },
             "interval_halfwidth": {
                 "type": "object",
-                "properties": {var: {"type": "number"} for var in variables},
+                "properties": {var: _halfwidth_schema(interval, horizon_hours) for var in variables},
                 "required": list(variables),
             },
         },
@@ -150,7 +234,10 @@ def forecast_schema(variables: list[str], horizon_hours: int) -> dict:
 
 
 class ForecastingAgent:
-    def __init__(self, llm: LocalLLM, cfg: dict):
+    def __init__(self, llm: LocalLLM, cfg: dict, reference: dict[str, dict] | None = None):
+        """`reference`: the training cohort's per-variable stats
+        (harmonization_agent.reference_stats), for unobserved variables and
+        cohort_anchor."""
         self.llm = llm
         self.variables = [v["name"] for v in cfg["variables"]]
         self.units = {v["name"]: v["unit"] for v in cfg["variables"]}
@@ -163,11 +250,28 @@ class ForecastingAgent:
         #   strict_length:      also state that every variable, observed or
         #                       not, needs exactly horizon_hours values
         #   recent_hours:       also list the last N hourly values (0 = none)
+        #   trend_hint, drift_damping, cohort_anchor, interval: see the
+        #                       module docstring
         fa = cfg.get("forecasting_agent") or {}
         self.similarity_context = fa.get("similarity_context", "horizon_mean")
         self.strict_length = bool(fa.get("strict_length", False))
         self.recent_hours = int(fa.get("recent_hours", 0))
-        self.schema = forecast_schema(self.variables, self.horizon_hours)
+        self.trend_hint = fa.get("trend_hint", "slope")
+        self.drift_damping = float(fa.get("drift_damping", 1.0))
+        self.cohort_anchor = bool(fa.get("cohort_anchor", False))
+        self.interval = fa.get("interval", "constant")
+        if self.trend_hint not in TREND_HINTS:
+            raise ValueError(f"forecasting_agent.trend_hint must be one of {TREND_HINTS}, not {self.trend_hint!r}")
+        if self.interval not in INTERVAL_MODES:
+            raise ValueError(f"forecasting_agent.interval must be one of {INTERVAL_MODES}, not {self.interval!r}")
+        if not 0.0 <= self.drift_damping <= 1.0:
+            raise ValueError(f"forecasting_agent.drift_damping must be in [0, 1], not {self.drift_damping}")
+        if self.cohort_anchor and reference is None:
+            raise ValueError("forecasting_agent.cohort_anchor needs the training cohort's reference stats")
+        self.reference = reference
+        self._fill = naive_fill(reference, self.variables)
+        self.system_prompt = system_prompt(self.interval)
+        self.schema = forecast_schema(self.variables, self.horizon_hours, self.interval)
         # How many forecast() calls fell back to the naive forecast. Reported
         # per condition: a model that often fails to produce valid JSON would
         # otherwise just look like the naive baseline. Locked because
@@ -184,7 +288,9 @@ class ForecastingAgent:
     def build_prompt(self, obs: np.ndarray, similarity_context: dict | None = None) -> str:
         """The user prompt forecast() sends (src/probe_output.py sends it too)."""
         obs_summary = summarize_observation(obs, self.variables)
-        obs_block = _format_observation_block(obs_summary, self.units)
+        # With cohort_anchor the cohort's values are listed below already.
+        obs_block = _format_observation_block(obs_summary, self.units, trend=self.trend_hint != "none",
+                                              reference=None if self.cohort_anchor else self.reference)
 
         if self.recent_hours > 0:
             obs_block += "\n" + _format_recent_hours(obs, self.variables, self.recent_hours)
@@ -213,9 +319,12 @@ class ForecastingAgent:
                     + "\n".join(lines)
                 )
 
+        anchor_block = (_format_cohort_anchor(self.reference, self.variables, self.units)
+                        if self.cohort_anchor else "")
+        trend_block = f"\n\n{DAMPED_TREND_NOTE}" if self.trend_hint == "damped" else ""
         prompt = (
             f"Observation window summary ({len(self.variables)} variables, most recent "
-            f"reading first in 'last'):\n{obs_block}{similarity_block}\n\n"
+            f"reading first in 'last'):\n{obs_block}{anchor_block}{similarity_block}{trend_block}\n\n"
             f"Forecast each variable for the next {self.horizon_hours} hours, one value per "
             "hour with one decimal place, as strict JSON per the system instructions."
         )
@@ -228,11 +337,18 @@ class ForecastingAgent:
         prompt = self.build_prompt(obs, similarity_context)
         raw = parsed = None
         try:
-            raw = self.llm.generate(prompt, system=SYSTEM_PROMPT, json_mode=True, schema=self.schema)
+            raw = self.llm.generate(prompt, system=self.system_prompt, json_mode=True, schema=self.schema)
             parsed = extract_json_block(raw)
             missing = self._validate_shape(parsed)
+            halfwidths = self._halfwidths(parsed, missing)
             if missing:
                 self._fill_missing(parsed, obs, missing)
+            if self.drift_damping < 1.0:
+                self._damp(parsed, missing)
+            # One half-width per hour for every variable (filled ones: constant).
+            parsed["interval_halfwidth"] = {
+                var: halfwidths.get(var) or [float(parsed["interval_halfwidth"][var])] * self.horizon_hours
+                for var in self.variables}
             return parsed
         except requests.exceptions.ConnectionError:
             # The Ollama server is gone (job ending, crash): not a model
@@ -247,7 +363,35 @@ class ForecastingAgent:
                 self.n_fallbacks += 1
                 kind = error_kind(e)
                 self.error_counts[kind] = self.error_counts.get(kind, 0) + 1
-            return _naive_fallback(obs, self.horizon_hours, self.variables)
+            return _naive_fallback(obs, self.horizon_hours, self.variables, self._fill)
+
+    def _halfwidths(self, parsed: dict, missing: list[str]) -> dict[str, list[float]]:
+        """The model's interval half-widths as one value per hour, whatever
+        the interval mode (a number, a list of horizon_hours values, or
+        {start, end} interpolated). Raises on a shape the forecast can't use."""
+        out = {}
+        for var in self.variables:
+            if var in missing:
+                continue
+            hw = parsed["interval_halfwidth"].get(var)
+            if isinstance(hw, (int, float)) and not isinstance(hw, bool):
+                vals = [float(hw)] * self.horizon_hours
+            elif isinstance(hw, list) and len(hw) == self.horizon_hours:
+                vals = [float(x) for x in hw]
+            elif isinstance(hw, dict) and {"start", "end"} <= set(hw):
+                vals = np.linspace(float(hw["start"]), float(hw["end"]), self.horizon_hours).tolist()
+            else:
+                raise ValueError(f"interval_halfwidth for '{var}' has an unusable shape: {str(hw)[:80]}")
+            out[var] = [abs(x) for x in vals]
+        return out
+
+    def _damp(self, parsed: dict, missing: list[str]) -> None:
+        """drift_damping: each hour's change from hour 1 shrunk by lambda."""
+        for var in self.variables:
+            if var in missing:
+                continue
+            vals = np.asarray(parsed["forecast"][var], dtype=float)
+            parsed["forecast"][var] = (vals[0] + self.drift_damping * (vals - vals[0])).tolist()
 
     def _validate_shape(self, parsed: dict) -> list[str]:
         """Raises on output that can't be used; returns the variables the
@@ -271,7 +415,7 @@ class ForecastingAgent:
         """Give the variables the model left out the naive forecast and
         interval (last value carried forward), keeping the model's forecasts
         for the rest."""
-        naive = _naive_fallback(obs, self.horizon_hours, self.variables)
+        naive = _naive_fallback(obs, self.horizon_hours, self.variables, self._fill)
         for var in missing:
             parsed["forecast"][var] = naive["forecast"][var]
             parsed["interval_halfwidth"][var] = naive["interval_halfwidth"][var]

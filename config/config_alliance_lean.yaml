@@ -69,6 +69,10 @@ cohort:
   random_seed: 42
   max_patients: 3000               # set to null once timed
 
+# Each variable may also set valid_range: [lo, hi] — raw values outside it
+# are charting artefacts and are dropped at extraction and when the tensors
+# are built (MAP 79104, SpO2 10099, heart rate 0 were in the Trillium lean
+# panel). Default: the variable's plausible_range.
 variables:
   - name: heart_rate
     source: icu_chartevents
@@ -163,6 +167,17 @@ llm:
       # 70B), community GGUF conversion; fits fully onto one H100.
       model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
       alias: "med42:70b"
+
+# Forecasting prompt and output (src/forecasting_agent.py). trend_hint,
+# drift_damping and cohort_anchor are tuned by src/tune.py
+# (config/tuning_grid.yaml) from their defaults (slope, 1.0, false).
+forecasting_agent:
+  # Interval half-widths the model gives: endpoints = one at the first and
+  # one at the last hour, interpolated, so intervals can widen with lead time
+  # for ~10 more output numbers; per_hour = all 24 per variable (about 60%
+  # more output tokens, so longer jobs); constant = one number per variable
+  # (the original prompt; its 90% intervals covered 16-39% on Trillium).
+  interval: endpoints
 
 similarity_agent:
   k_neighbors: 30

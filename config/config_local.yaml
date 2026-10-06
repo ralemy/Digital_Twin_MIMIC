@@ -38,6 +38,10 @@ cohort:
 # Tight variable panel (Chapter 5, Section 5.4 / Appendix A). Item labels are
 # resolved dynamically against d_items.csv.gz / d_labitems.csv.gz rather than
 # hardcoded itemids, then cached — see src/resolve_items.py.
+# Each variable may also set valid_range: [lo, hi] — raw values outside it
+# are charting artefacts and are dropped at extraction and when the tensors
+# are built (MAP 79104, SpO2 10099, heart rate 0 were in the Trillium lean
+# panel). Default: the variable's plausible_range.
 variables:
   - name: heart_rate
     source: icu_chartevents

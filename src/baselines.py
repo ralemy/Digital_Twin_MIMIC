@@ -44,12 +44,20 @@ except ImportError:
 # Naive last-value-carried-forward
 # ---------------------------------------------------------------------------
 
-def naive_forecast(obs: np.ndarray, horizon_hours: int) -> dict:
+def naive_forecast(obs: np.ndarray, horizon_hours: int,
+                   fill: list[tuple[float, float]] | None = None) -> dict:
+    """Last value carried forward. A variable with no observation in the
+    window gets fill[v] = (value, half-width) — the training median
+    (harmonization_agent.naive_fill) — or, without `fill`, 0 +/- 1.5, which
+    scores the maximum sMAPE wherever the truth exists."""
     n_vars = obs.shape[1]
     forecast = np.zeros((horizon_hours, n_vars))
     halfwidths = np.zeros(n_vars)
     for v in range(n_vars):
         valid = obs[:, v][~np.isnan(obs[:, v])]
+        if len(valid) == 0 and fill is not None:
+            forecast[:, v], halfwidths[v] = fill[v]
+            continue
         last = valid[-1] if len(valid) else 0.0
         std = np.std(valid) if len(valid) > 1 else 1.0
         forecast[:, v] = last

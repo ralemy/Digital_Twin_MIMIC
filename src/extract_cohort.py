@@ -46,6 +46,7 @@ from common import (
     vasopressor_cache_path,
     vasopressor_window_hours,
 )
+from harmonization_agent import drop_invalid_values
 
 log = get_logger("extract_cohort")
 
@@ -290,6 +291,9 @@ def resample_and_filter(cfg: dict, eligible_stays: pd.DataFrame, item_mapping: d
 
     raw = pd.concat(frames, ignore_index=True)
     raw = raw[(raw["hour"] >= 0) & (raw["hour"] <= total_h)]
+    # Charting artefacts (MAP 79104, SpO2 10099, heart rate 0) are dropped per
+    # raw value, before the hourly mean would blend them with real readings.
+    raw = drop_invalid_values(raw, cfg, value_col="valuenum")
     raw["hour_bin"] = np.floor(raw["hour"]).astype(int)
 
     panel = (

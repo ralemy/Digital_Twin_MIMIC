@@ -68,6 +68,15 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     return cfg
 
 
+def valid_ranges(cfg: dict) -> dict[str, tuple[float, float]]:
+    """Per variable, the range of values accepted as real measurements:
+    `valid_range` if the variable sets one, else its `plausible_range`.
+    Raw values outside it are charting artefacts (MAP 79104, SpO2 10099, heart
+    rate 0 were in the Trillium lean panel) and are dropped before they reach
+    any model, prompt or ground truth (extract_cohort.py, build_tensors)."""
+    return {v["name"]: tuple(v.get("valid_range") or v["plausible_range"]) for v in cfg["variables"]}
+
+
 def write_run_config(config_path: str, run_name: str, out_path: str) -> Path:
     """Write a copy of a base config for one named run (jobs/run_all.sh
     --run-name): work_dir becomes <work_dir>/<run_name>, and every other path

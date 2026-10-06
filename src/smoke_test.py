@@ -82,7 +82,7 @@ def make_synthetic_cohort_and_panel(cfg: dict) -> tuple[pd.DataFrame, pd.DataFra
     return cohort, panel_long
 
 
-def mock_llm_generate(self, prompt, system=None, json_mode=False):
+def mock_llm_generate(self, prompt, system=None, json_mode=False, schema=None, **kwargs):
     """Deterministic fake LLM: returns a plausible-looking forecast JSON
     without any real model, so the smoke test doesn't require Ollama."""
     import re

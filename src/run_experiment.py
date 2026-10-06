@@ -166,11 +166,25 @@ def main(config_path: str, full_refresh: bool = False) -> None:
                             ", ".join(f"{v} {k} ({100 * filled_rate[v]:.1f}%)"
                                       for v, k in zip(variables, result["llm_filled"]) if k))
 
+        # The critic's own record (full_pipeline* conditions): out-of-range
+        # values before it ran, and how many of them it clipped rather than
+        # the LLM correcting them. Its final forecast is always in range, so
+        # these, not the post-critic violation rate, show what it did.
+        n_cells = result["y_pred"].size
+        precritic = result["plausibility_violations_precritic"]
+        clipped = result["critic_clipped"]
+        critic_extra = {}
+        if precritic is not None:
+            critic_extra = {"precritic_violations": precritic, "critic_clipped": clipped, "n_cells": n_cells}
+            if precritic:
+                log.info("Condition '%s': %d / %d forecast values out of range before the critic "
+                         "(%.2f%%); %d corrected by its LLM, %d clipped.", condition, precritic, n_cells,
+                         100 * precritic / n_cells, precritic - clipped, clipped)
         np.savez_compressed(
             results_dir / f"{condition}_raw.npz",
             y_true=result["y_true"], y_pred=result["y_pred"],
             y_lower=result["y_lower"], y_upper=result["y_upper"],
-            stay_ids=np.array(result["stay_ids"]),
+            stay_ids=np.array(result["stay_ids"]), **critic_extra,
         )
 
         report = evaluate_twin(result["y_true"], result["y_pred"], variables,
@@ -186,10 +200,14 @@ def main(config_path: str, full_refresh: bool = False) -> None:
                 "smape": pm["smape"], "mae": pm["mae"], "rmse": pm.get("rmse"),
                 "ks_statistic": report.ks_results.get(var, {}).get("ks_statistic"),
                 "plausibility_violation_rate": report.plausibility_violations.get(var),
-                "interval_coverage": report.coverage,
-                "mean_interval_width": report.mean_width,
+                # Per variable; widths are in the variable's own unit.
+                "interval_coverage": report.coverage_by_var.get(var),
+                "mean_interval_width": report.width_by_var.get(var),
                 "llm_fallback_rate": fallback_rate,
                 "llm_filled_rate": filled_rate.get(var),
+                # Whole condition (all variables), full_pipeline* only.
+                "precritic_violation_rate": precritic / n_cells if precritic is not None else None,
+                "critic_llm_fixed_share": ((precritic - clipped) / precritic) if precritic else None,
             })
 
         # Saving the rows marks the condition finished: a resumed run skips it.
@@ -224,8 +242,8 @@ def _track_condition(condition: str, rows: list[dict], n_done: int) -> None:
         vals = [r[key] for r in rows if isinstance(r.get(key), (int, float)) and r[key] == r[key]]
         return sum(vals) / len(vals) if vals else None
     metrics = {f"{condition}/{k}": mean(k) for k in
-               ("smape", "mae", "plausibility_violation_rate", "interval_coverage", "mean_interval_width",
-                "llm_fallback_rate", "llm_filled_rate")}
+               ("smape", "mae", "plausibility_violation_rate", "interval_coverage",
+                "llm_fallback_rate", "llm_filled_rate", "precritic_violation_rate")}
     metrics["conditions_done"] = n_done
     tracking.log_metrics({k: v for k, v in metrics.items() if v is not None})
     tracking.summary({f"{condition}/smape": metrics.get(f"{condition}/smape")})

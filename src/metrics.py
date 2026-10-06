@@ -87,6 +87,10 @@ def marginal_ks_test(
     """
     Two-sample Kolmogorov-Smirnov test comparing the marginal distribution of
     predicted vs. actual values, per variable, pooled across patients/timesteps.
+    Only cells with both a true and a predicted value are compared: a sparse
+    variable (lactate: ~10% of cells) is measured mostly when a patient is
+    sick, so comparing every prediction with those few true values would
+    measure when lactate is drawn, not how well it is forecast.
 
     A LOW ks_statistic (and high p-value) means the predicted distribution
     matches the true distribution well -- i.e. the twin isn't just accurate
@@ -100,10 +104,9 @@ def marginal_ks_test(
     out = {}
     for i in range(n_vars):
         name = variable_names[i]
-        yt = y_true[..., i]
-        yp = y_pred[..., i]
-        yt = yt[~np.isnan(yt)]
-        yp = yp[~np.isnan(yp)]
+        mask = ~(np.isnan(y_true[..., i]) | np.isnan(y_pred[..., i]))
+        yt = y_true[..., i][mask]
+        yp = y_pred[..., i][mask]
         if len(yt) == 0 or len(yp) == 0:
             out[name] = {"ks_statistic": np.nan, "p_value": np.nan}
             continue
@@ -228,21 +231,25 @@ class EvaluationReport:
     ks_results: dict = field(default_factory=dict)
     correlation_preservation: dict = field(default_factory=dict)
     coverage: float | None = None
-    mean_width: float | None = None
+    # Per variable: interval coverage and mean width. Widths are in each
+    # variable's own unit, so there is no pooled width.
+    coverage_by_var: dict = field(default_factory=dict)
+    width_by_var: dict = field(default_factory=dict)
     plausibility_violations: dict = field(default_factory=dict)
 
     def summary_table(self) -> str:
         """Render a compact plain-text summary suitable for a results table draft."""
-        lines = ["variable\tsMAPE\tMAE\tKS_stat\tplausibility_violation_rate"]
+        lines = ["variable\tsMAPE\tMAE\tKS_stat\tplausibility_violation_rate\tinterval_coverage\tinterval_width"]
         for name, pm in self.point_metrics.items():
             ks = self.ks_results.get(name, {}).get("ks_statistic", float("nan"))
             pv = self.plausibility_violations.get(name, float("nan"))
+            cov = self.coverage_by_var.get(name, float("nan"))
+            width = self.width_by_var.get(name, float("nan"))
             lines.append(
-                f"{name}\t{pm['smape']:.4f}\t{pm['mae']:.4f}\t{ks:.4f}\t{pv:.4f}"
+                f"{name}\t{pm['smape']:.4f}\t{pm['mae']:.4f}\t{ks:.4f}\t{pv:.4f}\t{cov:.3f}\t{width:.3f}"
             )
         if self.coverage is not None:
-            lines.append(f"\nInterval coverage: {self.coverage:.3f}  "
-                         f"(target ~0.90)  mean width: {self.mean_width:.3f}")
+            lines.append(f"\nInterval coverage, all variables: {self.coverage:.3f}  (target ~0.90)")
         if self.correlation_preservation.get("frobenius_diff") is not None:
             lines.append(
                 f"Cross-variable correlation Frobenius diff: "
@@ -278,7 +285,9 @@ def evaluate_twin(
     )
     if y_lower is not None and y_upper is not None:
         report.coverage = interval_coverage(y_true, y_lower, y_upper)
-        report.mean_width = mean_interval_width(y_lower, y_upper)
+        for i, name in enumerate(variable_names):
+            report.coverage_by_var[name] = interval_coverage(y_true[..., i], y_lower[..., i], y_upper[..., i])
+            report.width_by_var[name] = mean_interval_width(y_lower[..., i], y_upper[..., i])
     return report
 
 

@@ -101,20 +101,41 @@ def compare_conditions(name_a: str, name_b: str, data_a: dict, data_b: dict, cfg
     }
 
 
+def critic_record(data: dict) -> dict | None:
+    """What a condition's critic did (run_experiment.py saves it with a
+    full_pipeline* condition's raw results): the share of forecast values out
+    of range before the critic, and the share of those its LLM corrected
+    rather than it clipping them. The post-critic violation rate is 0 by
+    construction (the critic ends by clipping), so these are the evidence
+    for RQ2; None for results saved before they were recorded."""
+    if "precritic_violations" not in data:
+        return None
+    n, clipped = int(data["precritic_violations"]), int(data["critic_clipped"])
+    return {"precritic_violation_rate": n / max(1, int(data["n_cells"])),
+            "precritic_violations": n, "clipped": clipped,
+            "llm_fixed_share": (n - clipped) / n if n else None}
+
+
 def plausibility_violation_comparison(name_a: str, name_b: str, data_a: dict, data_b: dict, cfg: dict) -> dict:
     from metrics import plausibility_violation_rate
 
     variables = [v["name"] for v in cfg["variables"]]
-    pv_a = plausibility_violation_rate(data_a["y_pred"], variables)
-    pv_b = plausibility_violation_rate(data_b["y_pred"], variables)
+    ranges = {v["name"]: tuple(v["plausible_range"]) for v in cfg["variables"]}
+    pv_a = plausibility_violation_rate(data_a["y_pred"], variables, ranges)
+    pv_b = plausibility_violation_rate(data_b["y_pred"], variables, ranges)
     overall_a = float(np.nanmean(list(pv_a.values())))
     overall_b = float(np.nanmean(list(pv_b.values())))
-    return {
+    out = {
         "comparison": f"{name_a}_vs_{name_b}_plausibility",
         f"{name_a}_violation_rate": overall_a,
         f"{name_b}_violation_rate": overall_b,
         "per_variable": {"a": pv_a, "b": pv_b},
     }
+    for name, data in ((name_a, data_a), (name_b, data_b)):
+        record = critic_record(data)
+        if record is not None:
+            out[f"{name}_critic"] = record
+    return out
 
 
 def model_variant_comparisons(cfg: dict, results_dir: Path) -> list[dict]:
@@ -271,10 +292,10 @@ def interval_calibration(cfg: dict, results_dir: Path) -> dict | None:
                             "width_before": mean_interval_width(yl, yu),
                             "width_after": mean_interval_width(lo[..., i], hi[..., i])}
         out["conditions"][condition] = {
+            # Coverage pools all variables; widths are per variable only
+            # (each in its own unit).
             "coverage_before": interval_coverage(data["y_true"], data["y_lower"], data["y_upper"]),
             "coverage_after": interval_coverage(data["y_true"], lo, hi),
-            "width_before": mean_interval_width(data["y_lower"], data["y_upper"]),
-            "width_after": mean_interval_width(lo, hi),
             "per_variable": per_var,
         }
     return out

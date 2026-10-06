@@ -65,6 +65,14 @@ def atomic_path(path: Path):
         tmp.unlink(missing_ok=True)
 
 
+# What every model and condition depends on beyond the config: how the data
+# are prepared. v2: raw values outside each variable's valid range are dropped,
+# and a variable with no observations is filled with the training median
+# instead of 0 (naive forecast, LLM fallback, prompt). Checkpoints made
+# before that must not be reused.
+DATA_VERSION = "v2_valid_range_median_fill"
+
+
 def _hash(obj) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
@@ -77,7 +85,7 @@ def model_fingerprint(cfg: dict, model: str, train_ids) -> dict:
     """What a fitted baseline depends on: the panel, the cohort settings, the
     exact training patients and (for the LSTM) its training settings."""
     fp = {"model": model, "variables": cfg["variables"], "cohort": cfg["cohort"],
-          "train_ids": _ids_hash(train_ids)}
+          "train_ids": _ids_hash(train_ids), "data": DATA_VERSION}
     if model == "lstm":
         fp["lstm"] = {k: cfg["baselines"].get(k) for k in ("lstm_hidden_size", "lstm_epochs")}
         fp["lstm"].update(_set_keys(cfg["baselines"], ("lstm_learning_rate", "lstm_seed")))
@@ -101,7 +109,7 @@ def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids) -> dic
     the similarity and critic agents' settings."""
     base, variant = split_condition(condition)
     fp = {"condition": condition, "variables": cfg["variables"], "cohort": cfg["cohort"],
-          "train_ids": _ids_hash(train_ids), "test_ids": _ids_hash(test_ids)}
+          "train_ids": _ids_hash(train_ids), "test_ids": _ids_hash(test_ids), "data": DATA_VERSION}
     if base in ("lstm", "gbm"):
         fp.update({k: v for k, v in model_fingerprint(cfg, base, train_ids).items() if k == base})
     if base in LLM_CONDITIONS:
@@ -222,6 +230,7 @@ class ConditionCheckpoint:
                 return None
             return {k: z[k] for k in ("y_pred", "y_lower", "y_upper")} | {
                 "violations": int(z["violations"]), "fallbacks": int(z["fallbacks"]),
+                "clipped": int(z["clipped"]) if "clipped" in z.files else 0,
                 # Baseline batches saved before per-variable fill counts existed.
                 "filled": z["filled"] if "filled" in z.files else np.zeros(z["y_pred"].shape[2], dtype=int)}
 
@@ -232,7 +241,7 @@ class ConditionCheckpoint:
                 np.savez(f, stay_ids=np.array(stay_ids),
                          y_pred=batch["y_pred"], y_lower=batch["y_lower"], y_upper=batch["y_upper"],
                          violations=batch["violations"], fallbacks=batch["fallbacks"],
-                         filled=batch["filled"])
+                         filled=batch["filled"], clipped=batch["clipped"])
 
     def load_rows(self, n_batches: int) -> list[dict] | None:
         """The condition's summary rows if it already finished, else None.

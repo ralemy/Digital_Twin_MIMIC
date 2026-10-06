@@ -111,12 +111,12 @@ declare -A SCRIPT=(
 # with (~80 min per LLM condition on 450 patients). So lean: ~47 min per
 # condition for the 27-32B models; ~62 min for the two 70B models, assuming
 # only 1.3x for them (they fit at 8 slots, 63.6 GB, but their speed wasn't
-# measured). Calibration is 322/450 of the run; tuning is 14 qwen2.5
+# measured). Calibration is 322/450 of the run; tuning is 27 qwen2.5
 # evaluations on 128 patients plus ~20 min of baselines and model loads.
 # full: the same with 3.7x the LLM time. models: ~78 GB to download at the
 # ~24 MB/s job 23132444 measured; near zero once everything is present.
-declare -A EST_LEAN=([models]=90 [resolve]=5 [extract]=10 [tune]=210 [calibrate]=600  [run]=840  [evaluate]=30)
-declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=720 [calibrate]=2160 [run]=3020 [evaluate]=30)
+declare -A EST_LEAN=([models]=90 [resolve]=5 [extract]=10 [tune]=400 [calibrate]=600  [run]=840  [evaluate]=30)
+declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=1390 [calibrate]=2160 [run]=3020 [evaluate]=30)
 
 usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 

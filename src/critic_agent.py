@@ -53,15 +53,20 @@ class CriticAgent:
         self._lock = threading.Lock()
 
     def review(self, forecast: dict) -> dict:
-        """Returns a new forecast dict plus a per-variable violation count
-        (pre-correction) used for the plausibility-violation-rate metric."""
+        """Returns a new forecast dict plus the number of out-of-range values
+        before correction (violations_before_correction) and how many of them
+        the LLM's correction didn't fix, so they were clipped (clipped_values;
+        all of them for a clip-only critic). The final forecast is always in
+        range, so the post-critic violation rate is 0 by construction: these
+        two counts are the critic's real RQ2 evidence."""
         if not self.enabled:
             n_violations = self._count_violations(forecast)
             return {"forecast": forecast["forecast"], "interval_halfwidth": forecast["interval_halfwidth"],
-                    "violations_before_correction": n_violations, "corrected": False}
+                    "violations_before_correction": n_violations, "clipped_values": 0, "corrected": False}
 
         corrected = {k: list(v) for k, v in forecast["forecast"].items()}
         n_violations_before = self._count_violations(forecast)
+        n_clipped = 0
         any_correction = False
 
         for var, values in forecast["forecast"].items():
@@ -83,6 +88,7 @@ class CriticAgent:
                 # so a stubborn model never lets an implausible value through.
                 # (A clip-only critic always ends up here, quietly.)
                 fixed = np.clip(fixed, lo, hi)
+                n_clipped += len(bad_idx)
                 if not self.clip_only:
                     log.info("Clipped %d residual out-of-range value(s) for '%s' after %d correction attempt(s).",
                              len(bad_idx), var, attempt)
@@ -94,6 +100,7 @@ class CriticAgent:
             "forecast": corrected,
             "interval_halfwidth": forecast["interval_halfwidth"],
             "violations_before_correction": n_violations_before,
+            "clipped_values": n_clipped,
             "corrected": any_correction,
         }
 

@@ -122,7 +122,9 @@ def condition_metrics(result: dict, cfg: dict) -> dict:
         # the naive values are scored like any other forecast.
         "filled_rate": float(np.sum(filled)) / max(1, n * len(variables)) if filled is not None else 0.0,
         "interval_coverage": interval_coverage(result["y_true"], result["y_lower"], result["y_upper"]),
-        "mean_interval_width": mean_interval_width(result["y_lower"], result["y_upper"]),
+        # Per variable (each in its own unit), one trials.csv column each.
+        **{f"interval_width_{var}": mean_interval_width(result["y_lower"][..., i], result["y_upper"][..., i])
+           for i, var in enumerate(variables)},
         "plausibility_violation_rate": float(np.nanmean(list(pvr.values()))),
     }
 

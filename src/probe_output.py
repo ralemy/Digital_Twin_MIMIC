@@ -41,6 +41,7 @@ from pathlib import Path
 
 from common import cfg_for_llm_variant, ensure_work_dirs, get_logger, load_config
 from forecasting_agent import SYSTEM_PROMPT, ForecastingAgent
+from harmonization_agent import reference_stats
 from harmonization_agent import build_tensors
 from llm_client import LocalLLM, extract_json_block
 from run_experiment import load_cohort_and_panel, split_tensors
@@ -94,12 +95,12 @@ def main(config_path: str, variant: str, n_patients: int, max_tokens: int, timeo
     ensure_work_dirs(cfg)
     vcfg = cfg_for_llm_variant(cfg, None if variant == "default" else variant)
     llm = LocalLLM(vcfg)
-    agent = ForecastingAgent(llm, vcfg)
-    horizon, variables = agent.horizon_hours, agent.variables
-
     grid = load_grid(DEFAULT_GRID)
     cohort, panel_long = load_cohort_and_panel(cfg)
     splits = split_tensors(build_tensors(cfg, cohort, panel_long), cohort)
+    variables = [v["name"] for v in cfg["variables"]]
+    agent = ForecastingAgent(llm, vcfg, reference_stats(splits["train"], variables))
+    horizon = agent.horizon_hours
     tune_ids, _ = validation_subsets(splits["val"], grid["n_tune_patients"], grid["seed"])
     ids = tune_ids[:n_patients]
 
@@ -141,7 +142,7 @@ def main(config_path: str, variant: str, n_patients: int, max_tokens: int, timeo
             row = {"variant": variant, "model": llm.model, "stay_id": int(sid), "mode": mode,
                    "max_tokens": max_tokens}
             try:
-                body = call(llm, prompt, fmt, max_tokens, timeout, think=think)
+                body = call(llm, prompt, fmt, max_tokens, timeout, system=agent.system_prompt, think=think)
                 text = body.get("response", "")
                 thinking = body.get("thinking") or ""
                 row.update({"done_reason": body.get("done_reason"), "tokens": body.get("eval_count"),
