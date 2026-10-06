@@ -577,12 +577,29 @@ with `sbatch`:
 ```bash
 cd "$DT_REPO"
 bash jobs/run_all.sh lean --plan                 # show the jobs and time limits it would submit
-bash jobs/run_all.sh lean                        # start, or resume / re-attach (the scope defaults to lean)
+bash jobs/run_all.sh lean                        # start a new run with a random name, e.g. sassy_hammer (the scope defaults to lean)
+bash jobs/run_all.sh lean --run-name sassy_hammer   # resume / re-attach to that run (or start one with your own name)
 bash jobs/run_all.sh lean --unattended           # a whole run with no one watching
 bash jobs/run_all.sh full                        # full scope — only if your approval covers it
-bash jobs/run_all.sh lean --status               # stage status, job ids, whether the driver is alive
-bash jobs/run_all.sh lean --stop                 # stop the driver; submitted jobs keep running
+bash jobs/run_all.sh lean --status               # stage status, job ids, whether the driver is alive (latest run)
+bash jobs/run_all.sh lean --stop                 # stop the driver; submitted jobs keep running (latest run)
 ```
+
+**Run names.** Every run has a name: `--run-name <name>`, or a new random
+one (`funny_rabbit`, `sassy_hammer`, ...) that the driver prints when it
+starts. Everything of a run lives under its name, so runs never mix and
+calls with the same name resume the same run:
+
+| What | Where |
+|---|---|
+| the run's config (a copy of the base config, rewritten when a driver starts) and its tuned config | `tuned_configs/<run>/` |
+| work, cache, results, checkpoints | `$DT_RESULTS_DIR/mimic-iv-twin-work/<run>/` (full: `mimic-iv-twin-work-full/<run>/`) |
+| driver log, job `.out` files, Ollama logs | `$DT_LOGS_ROOT/<run>/` |
+| driver state | `run_all/<run>/` |
+
+A new name starts from scratch, including resolve (and its review) and
+extract. `--status`, `--stop` and `--plan` without `--run-name` use the
+scope's latest run. Drivers of different runs can run side by side.
 
 Other options: `-i <seconds>` (how often Slurm is checked, default 120, at
 least 60), `--redo-extract` (re-run resolve and extract even if their
@@ -616,13 +633,14 @@ start it on the GPU login node (`trig-login01`).
   by you or an administrator, or the retries running out, stops it. A whole
   lean run is about 46 hours of work plus queue waits.
 - **Detached and resumable:** the driver detaches from your terminal
-  (`setsid nohup`) and logs to `run_all/<scope>.log`, which the command then
-  follows; Ctrl+C or a dropped SSH connection stops only the following.
-  Running the same command again re-attaches, or, if the driver died (login
-  node rebooted, `--stop`), starts a new one that picks up the submitted
-  jobs from `run_all/<scope>.state`. Jobs keep running under Slurm either
+  (`setsid nohup`) and logs to `$DT_LOGS_ROOT/<run>/run_all-<scope>.log`,
+  which the command then follows; Ctrl+C or a dropped SSH connection stops
+  only the following. Running it again with the same `--run-name`
+  re-attaches, or, if the driver died (login node rebooted, `--stop`),
+  starts a new one that picks up the submitted jobs from
+  `run_all/<run>/<scope>.state`. Jobs keep running under Slurm either
   way.
-- **Cluster etiquette:** one driver per scope; Slurm is queried once per
+- **Cluster etiquette:** one driver per scope and run name; Slurm is queried once per
   interval through `jobs/monitor-job.sh`; it refuses to run inside a job.
   Inside `tmux`, `--foreground` works too.
 
@@ -642,10 +660,10 @@ the repo, git-ignored; on `$SCRATCH` on Trillium), never the repo base:
 - **Jobs you submit with `jobs/submit.sh`** write
   `$DT_LOGS_ROOT/<job-name>-<jobid>.out`, and the GPU jobs also
   `ollama-<jobid>.log` next to it.
-- **Jobs submitted by `run_all.sh`** write both into one folder per driver
-  run, `$DT_LOGS_ROOT/run_all-<scope>-<YYYYmmdd-HHMMSS>/`, so an unattended run's
-  logs stay together. The driver announces it, and `--status` shows the
-  latest one. The driver's own log and state stay in `run_all/`.
+- **Jobs submitted by `run_all.sh`** write both into one folder per run
+  name, `$DT_LOGS_ROOT/<run>/`, next to the driver's own log, so a run's
+  logs stay together. `--status` shows it. The driver's state stays in
+  `run_all/<run>/`.
 
 The first lines of every `.out` show the
 cluster, account and resolved locations.
@@ -660,7 +678,8 @@ change the interval).
 ## 8. Where the results are
 
 For the lean scope (full: replace `mimic-iv-twin-work` with
-`mimic-iv-twin-work-full`):
+`mimic-iv-twin-work-full`); a `run_all.sh` run has all of this one level
+down, in `mimic-iv-twin-work/<run>/`, and its configs in `tuned_configs/<run>/`:
 
 ```
 $DT_RESULTS_DIR/mimic-iv-twin-work/
@@ -672,6 +691,7 @@ $DT_RESULTS_DIR/mimic-iv-twin-work/
   results_tuned/statistical_analysis.json                   step 4 — RQ1–RQ3
   checkpoints/, checkpoints_tuned/   resume state (safe to delete once finished)
 $DT_RESULTS_DIR/tuned-configs/       the tuned configs, when workers_can_write_repo is false
+                                     (tuned_configs/ in the repo is then a link to it)
 ```
 
 On Trillium `$DT_RESULTS_DIR` is on `$SCRATCH`, which is purged: copy the
@@ -748,7 +768,8 @@ regardless of hardware.
 ### Project layout
 
 ```
-logs/                                     job .out files and Ollama logs by default (paths.logs_dir; git-ignored); run_all-<scope>-<time>/ per run_all.sh run
+logs/                                     job .out files and Ollama logs by default (paths.logs_dir; git-ignored); <run>/ per run_all.sh run name
+tuned_configs/<run>/                      run_all.sh's per-run config and tuned config (git-ignored)
 jobs/setup_bash.sh                        reads your profile: locations, account, symlinks, .venv
 jobs/load_profile.sh                      sourced by every job: --profile, setup_bash.sh, PhysioNet credentials
 jobs/run_all.sh lean|full                 the whole pipeline as chained Slurm jobs (login node)

@@ -6,6 +6,7 @@
 #   bash jobs/run_all.sh lean --plan             # show the jobs it would submit
 #   bash jobs/run_all.sh lean --status           # what's done / running
 #   bash jobs/run_all.sh lean --stop             # stop the driver (not the jobs)
+#   bash jobs/run_all.sh lean --run-name funny_rabbit   # resume / name a run
 # Other options: -i <seconds> (how often Slurm is checked, at least 60,
 # default 120), --foreground (don't detach), --redo-extract (re-run steps 1-2
 # even if their outputs exist), --profile <file> (passed on to every job),
@@ -13,17 +14,32 @@
 # finished stages again, e.g. after adding conditions: --redo calibrate,run,
 # evaluate; their checkpoints mean only new work is computed).
 #
+# Run names. Every run has a name (--run-name; default: a new random one
+# such as sassy_hammer, printed when the driver starts). All run_all calls
+# with the same name share:
+#   tuned_configs/<run>/                         the run's copy of the config
+#                                                and its tuned config
+#   $DT_RESULTS_DIR/mimic-iv-twin-work[-full]/<run>/   work, cache, results
+#   $DT_LOGS_ROOT/<run>/                         driver log, job .out files,
+#                                                Ollama logs
+#   run_all/<run>/                               the driver's state files
+# So a new name starts from scratch (resolve and extract run again), and the
+# same name resumes. --status, --stop and --plan without --run-name use the
+# scope's latest run (run_all/<scope>.latest).
+#
 # Stages, each run by the job script already in jobs/:
 #   models     prep2_download_models.sh        <config>   (pulls only what's missing)
 #   resolve    step1_resolve_items.sh     <config>
 #   extract    step2_extract_cohort.sh    <config>
-#   tune       step3b_tune.sh             <config>   -> <config>_tuned.yaml
+#   tune       step3b_tune.sh             <config>   -> <config>_tuned.yaml (same directory)
 #   calibrate  step3c_calibrate.sh        <tuned config>
 #   run        step3_run_experiment.sh    <tuned config>
 #   evaluate   step4_evaluate_results.sh  <tuned config>
 # Jobs are submitted through jobs/submit.sh, which adapts them to the cluster
 # (on Trillium: run this from the GPU login node; every job takes one GPU).
-# lean = config/config_alliance_lean.yaml, full = config/config_alliance_full.yaml.
+# lean = config/config_alliance_lean.yaml, full = config/config_alliance_full.yaml;
+# <config> is the run's copy, tuned_configs/<run>/<config file>, rewritten
+# from it each time a driver starts.
 # evaluate writes statistical_analysis.json (RQ1-RQ3) to the tuned results_dir.
 # resolve/extract are skipped if their outputs already exist. After resolve
 # runs, the driver stops so item_mapping.json can be reviewed; run the same
@@ -50,18 +66,19 @@
 # resolve for the item-mapping review (review it afterwards). Only a job
 # cancelled by you or an administrator, or retries running out, stops it.
 #
-# Resuming. Stage status and job ids are kept in run_all/<scope>.state. The
-# driver detaches from the terminal (setsid + nohup) and logs to
-# run_all/<scope>.log, which this command then follows: Ctrl+C or a dropped
-# SSH connection stops only the following. Running the same command again
-# re-attaches to a live driver, or, if it has died (login node rebooted,
+# Resuming. Stage status and job ids are kept in run_all/<run>/<scope>.state.
+# The driver detaches from the terminal (setsid + nohup) and logs to
+# $DT_LOGS_ROOT/<run>/run_all-<scope>.log, which this command then follows:
+# Ctrl+C or a dropped SSH connection stops only the following. Running the
+# same command with the same --run-name again re-attaches to a live driver, or, if it has died (login node rebooted,
 # stopped), starts a new one that picks up the jobs already submitted. A
 # stage that failed is resubmitted from its checkpoints. Jobs run under
 # Slurm either way: a dead driver only delays submitting the NEXT stage.
 #
 # Cluster etiquette (Alliance): Slurm is queried once per interval (at least
 # 60 s) through jobs/monitor-job.sh, one driver runs per scope, it refuses to
-# run inside a job, and it is idle between checks. The Alliance docs also
+# run inside a job, and it is idle between checks. (One driver per scope and
+# run name: different run names run side by side.) The Alliance docs also
 # suggest tmux for long sessions; --foreground inside tmux works as well.
 # =============================================================================
 set -uo pipefail
@@ -101,10 +118,10 @@ declare -A SCRIPT=(
 declare -A EST_LEAN=([models]=90 [resolve]=5 [extract]=10 [tune]=210 [calibrate]=600  [run]=840  [evaluate]=30)
 declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=720 [calibrate]=2160 [run]=3020 [evaluate]=30)
 
-usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 ORIG_ARGS=("$@")
-SCOPE=""; ACTION=run; FOREGROUND=0; REDO_EXTRACT=0; UNATTENDED=0; REDO=""
+SCOPE=""; ACTION=run; FOREGROUND=0; REDO_EXTRACT=0; UNATTENDED=0; REDO=""; RUN_NAME=""
 PROFILE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -118,6 +135,8 @@ while [ $# -gt 0 ]; do
         --plan) ACTION=plan; shift ;;
         --status) ACTION=status; shift ;;
         --stop) ACTION=stop; shift ;;
+        --run-name) RUN_NAME="${2:-}"; shift 2 ;;
+        --run-name=*) RUN_NAME="${1#--run-name=}"; shift ;;
         --profile) PROFILE_ARGS+=("$1" "${2:-}"); shift 2 ;;
         --profile=*) PROFILE_ARGS+=("$1"); shift ;;
         -h|--help) usage 0 ;;
@@ -139,24 +158,73 @@ load_profile "${PROFILE_ARGS[@]}" || exit 1
 cd "$DT_REPO" || exit 1
 
 if [ "$SCOPE" = lean ]; then
-    CONFIG=config/config_alliance_lean.yaml
+    BASE_CONFIG=config/config_alliance_lean.yaml
     declare -n EST=EST_LEAN
 else
-    CONFIG=config/config_alliance_full.yaml
+    BASE_CONFIG=config/config_alliance_full.yaml
     declare -n EST=EST_FULL
 fi
+
+# --- run name --------------------------------------------------------------------
+ADJECTIVES=(agile bold brave breezy bright calm cheeky clever cosmic crafty curious dapper
+            eager fancy fearless fuzzy gentle giddy groovy happy humble jolly jumpy keen
+            lively lucky mellow merry mighty nimble noble peppy plucky quirky quick rapid
+            sassy shiny silly sleepy snappy spicy sunny swift tidy witty zany zesty)
+NOUNS=(badger beacon biscuit cactus comet falcon ferret gecko hammer harbor kettle koala
+       lantern lemur llama mango marble meadow narwhal noodle otter panda pancake pebble
+       pelican penguin pickle puffin quokka rabbit raccoon rocket sparrow squid teapot
+       tiger toucan tulip turnip walrus wombat yak zebra)
+run_name_taken() {
+    [ -e "run_all/$1" ] || [ -e "$DT_LOGS_ROOT/$1" ] || [ -e "tuned_configs/$1" ] ||
+        compgen -G "$DT_RESULTS_DIR/mimic-iv-twin-work*/$1" > /dev/null
+}
+new_run_name() {
+    local name i
+    for i in {1..50}; do
+        name="${ADJECTIVES[RANDOM % ${#ADJECTIVES[@]}]}_${NOUNS[RANDOM % ${#NOUNS[@]}]}"
+        run_name_taken "$name" || { echo "$name"; return 0; }
+    done
+    echo "${name}_$(date +%Y%m%d%H%M%S)"
+}
+LATEST_FILE="run_all/$SCOPE.latest"   # the scope's most recently started run
+if [ -z "$RUN_NAME" ]; then
+    if [ "$ACTION" = run ]; then
+        RUN_NAME=$(new_run_name)
+        ORIG_ARGS+=(--run-name "$RUN_NAME")   # so the detached driver gets the same name
+    elif [ -s "$LATEST_FILE" ]; then
+        RUN_NAME=$(cat "$LATEST_FILE")
+    elif [ "$ACTION" = plan ]; then
+        RUN_NAME="<run>"
+    else
+        echo "== no $SCOPE run started yet (give one with --run-name) ==" >&2
+        exit 1
+    fi
+fi
+if [ "$RUN_NAME" != "<run>" ] && ! [[ "$RUN_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    echo "== --run-name: letters, digits, '_', '.' and '-' only (got '$RUN_NAME') ==" >&2
+    exit 1
+fi
+
+# The run's configs: a copy of the base config whose work/cache/results
+# directories are under <work_dir>/<run>, and the tune stage's tuned config
+# next to it. Where compute nodes can't write the repo, tuned_configs is a
+# link to $DT_RESULTS_DIR/tuned-configs (jobs/setup_bash.sh, or below).
+RUN_CONFIG_DIR="tuned_configs/$RUN_NAME"
+CONFIG="$RUN_CONFIG_DIR/$(basename "$BASE_CONFIG")"
 TUNED="${CONFIG%.yaml}_tuned.yaml"
-RERUN="bash jobs/run_all.sh $SCOPE"
+RERUN="bash jobs/run_all.sh $SCOPE --run-name $RUN_NAME"
 [ "$UNATTENDED" -eq 1 ] && RERUN+=" --unattended"
 
-RUN_DIR=run_all
-mkdir -p "$RUN_DIR"
+RUN_DIR="run_all/$RUN_NAME"
 STATE="$RUN_DIR/$SCOPE.state"       # lines: <stage> <status> <round> <job ids...>
-LOG="$RUN_DIR/$SCOPE.log"
 HEARTBEAT="$RUN_DIR/$SCOPE.heartbeat"
 DRIVER="$RUN_DIR/$SCOPE.driver"     # "<host> <pid>" of the live driver
 STOP_FILE="$RUN_DIR/$SCOPE.stop"
-LOGDIR_FILE="$RUN_DIR/$SCOPE.logdir"   # the current/last driver's job-log directory
+# Every job this run submits writes its Slurm output and its Ollama log here
+# (sbatch --output, and DT_LOG_DIR in the job's environment), next to the
+# driver's own log.
+RUN_LOG_DIR="$DT_LOGS_ROOT/$RUN_NAME"
+LOG="$RUN_LOG_DIR/run_all-$SCOPE.log"
 
 log() { echo "[$(date '+%m-%d %H:%M:%S')] $*" >&2; }
 
@@ -170,6 +238,16 @@ cfg_path() {
     "$DT_SYS_PYTHON" -c 'import sys; sys.path.insert(0, "src")
 from common import load_config
 print(load_config(sys.argv[1])["paths"][sys.argv[2]])' "$1" "$2"
+}
+
+# (Re)write the run's copy of the base config (common.write_run_config).
+write_run_config() {
+    if [ "${DT_WORKER_WRITES_REPO:-1}" != 1 ] && [ ! -e tuned_configs ]; then
+        mkdir -p "$DT_RESULTS_DIR/tuned-configs" && ln -s "$DT_RESULTS_DIR/tuned-configs" tuned_configs || return 1
+    fi
+    "$DT_SYS_PYTHON" -c 'import sys; sys.path.insert(0, "src")
+from common import write_run_config
+write_run_config(*sys.argv[1:])' "$BASE_CONFIG" "$RUN_NAME" "$CONFIG"
 }
 
 # --- state file ---------------------------------------------------------------
@@ -205,7 +283,7 @@ stage_config() { case "$1" in models|resolve|extract|tune) echo "$CONFIG" ;; *) 
 
 show_plan() {
     local stage limits total=0 m
-    echo "== $SCOPE scope ($CONFIG): planned jobs per stage (est. work -> time limits) =="
+    echo "== $SCOPE scope, run $RUN_NAME ($CONFIG): planned jobs per stage (est. work -> time limits) =="
     for stage in "${STAGES[@]}"; do
         limits=""
         if on_login_node "$stage"; then
@@ -221,14 +299,15 @@ show_plan() {
 
 show_status() {
     local stage st
-    echo "== $SCOPE scope: stage status ($STATE) =="
+    echo "== $SCOPE scope, run $RUN_NAME: stage status ($STATE) =="
     for stage in "${STAGES[@]}"; do
         st=$(state_status "$stage")
         printf '   %-10s %-8s round %-2s jobs %s\n' "$stage" "${st:-not started}" "$(state_round "$stage")" "$(state_jobs "$stage")"
     done
     if driver_alive; then echo "== driver running: $(cat "$DRIVER" 2>/dev/null) (log: $LOG) =="
-    else echo "== no driver running — re-run 'bash jobs/run_all.sh $SCOPE' to resume =="; fi
-    [ -f "$LOGDIR_FILE" ] && echo "== job logs (latest driver): $(cat "$LOGDIR_FILE")/ =="
+    else echo "== no driver running — re-run '$RERUN' to resume =="; fi
+    echo "== logs: $RUN_LOG_DIR/ =="
+    echo "== runs: $(find run_all -mindepth 1 -maxdepth 1 -type d -printf '%f ' 2>/dev/null)=="
     return 0
 }
 
@@ -466,13 +545,17 @@ case "$ACTION" in
             echo "== asked the driver ($(cat "$DRIVER" 2>/dev/null)) to stop; it will within a minute. Submitted jobs keep running: =="
             squeue -u "$USER" -h -o '   %i %j %T %M/%l' 2>/dev/null
         else
-            echo "== no driver running for $SCOPE =="
+            echo "== no driver running for $SCOPE, run $RUN_NAME =="
         fi
         exit 0 ;;
 esac
 
+mkdir -p "$RUN_DIR" "$RUN_LOG_DIR"
+echo "$RUN_NAME" > "$LATEST_FILE"
+
 # Detach: start the driver in its own session, then follow its log.
 if [ "$FOREGROUND" -eq 0 ]; then
+    echo "== run name: $RUN_NAME (resume with: $RERUN) =="
     if driver_alive; then
         echo "== a driver is already running ($(cat "$DRIVER" 2>/dev/null)) — following its log =="
         [ -n "$REDO" ] && echo "== --redo ignored: it applies when a driver starts; stop this one first (--stop) ==" >&2
@@ -493,7 +576,7 @@ fi
 
 # --- the driver ------------------------------------------------------------------
 if driver_alive; then
-    echo "== a driver for $SCOPE is already running ($(cat "$DRIVER" 2>/dev/null)) — not starting another ==" >&2
+    echo "== a driver for $SCOPE, run $RUN_NAME is already running ($(cat "$DRIVER" 2>/dev/null)) — not starting another ==" >&2
     exit 1
 fi
 TEE_PID=""
@@ -504,14 +587,8 @@ fi
 echo "$(hostname) $$" > "$DRIVER"
 touch "$HEARTBEAT"
 
-# This run's job logs: every job this driver submits writes its Slurm output
-# and its Ollama log here (sbatch --output, and DT_LOG_DIR in the job's
-# environment), so one unattended run's logs are together.
-RUN_LOG_DIR="$DT_LOGS_ROOT/run_all-$SCOPE-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$RUN_LOG_DIR"
 DT_LOG_DIR="$RUN_LOG_DIR"
 export DT_LOG_DIR
-echo "$RUN_LOG_DIR" > "$LOGDIR_FILE"
 
 # TERM a process and everything below it (except the caller), children first.
 # Bash runs the driver's TERM trap only once its current child (a
@@ -559,8 +636,11 @@ if [ -n "$REDO" ]; then
         log "== --redo: stage '$stage' will run again =="
     done
 fi
-log "== run_all $SCOPE: $CONFIG, checking Slurm every ${INTERVAL}s (host $(hostname), pid $$) =="
-log "== job and Ollama logs of this run: $RUN_LOG_DIR/ =="
+if ! write_run_config; then
+    log "== could not write $CONFIG from $BASE_CONFIG =="; exit 1
+fi
+log "== run_all $SCOPE, run $RUN_NAME: $CONFIG, checking Slurm every ${INTERVAL}s (host $(hostname), pid $$) =="
+log "== logs of this run: $RUN_LOG_DIR/; results: $(cfg_path "$CONFIG" work_dir)/ =="
 show_plan >&2
 
 for stage in "${STAGES[@]}"; do

@@ -58,7 +58,8 @@
 #                     $HOME and /project: results_dir and logs_dir must then be
 #                     elsewhere (on $SCRATCH), and the tuned configs the tune
 #                     job writes (config/<config>_tuned.yaml) become symlinks
-#                     into $DT_RESULTS_DIR/tuned-configs
+#                     into $DT_RESULTS_DIR/tuned-configs, and tuned_configs/
+#                     (run_all.sh's per-run configs) a link to it
 #   DT_GPU_JOBS_ONLY  [slurm.gpu_jobs_only, default false, true on Trillium] 1
 #                     where every job must take a GPU and may not ask for
 #                     memory (Trillium's GPU subcluster): jobs/submit.sh then
@@ -72,7 +73,7 @@
 #   DT_CLUSTER        $CC_CLUSTER (rorqual, trillium, ...), or "local"
 #   DT_PROFILE        the profile that was read
 #   DT_LOG_DIR        where jobs write their Ollama logs: $DT_LOGS_ROOT unless
-#                     already set (jobs/run_all.sh sets a directory per run);
+#                     already set (jobs/run_all.sh sets $DT_LOGS_ROOT/<run>);
 #                     Slurm's own .out files go there through jobs/submit.sh
 # The PhysioNet credentials in the profile are NOT read here — only by the
 # download job, through jobs/load_profile.sh.
@@ -302,10 +303,17 @@ dt_make_links() {
 # Where compute nodes can't write the repo, the tune job's output,
 # config/<config>_tuned.yaml, is a symlink to $DT_RESULTS_DIR/tuned-configs/
 # (src/tune.py writes through it). A tuned config that is already a real
-# file is left as it is.
+# file is left as it is. jobs/run_all.sh's per-run configs,
+# tuned_configs/<run>/, go there through the tuned_configs link.
 dt_link_tuned_configs() {
     local base tuned target dir="$DT_RESULTS_DIR/tuned-configs"
     mkdir -p "$dir"
+    if [ -e "$DT_REPO/tuned_configs" ] && [ ! -L "$DT_REPO/tuned_configs" ]; then
+        echo "   tuned_configs is a real directory — jobs here can't write it; move its contents to $dir, remove it, and run the setup again"
+    else
+        ln -sfn "$dir" "$DT_REPO/tuned_configs"
+        echo "   tuned_configs -> $dir (run_all.sh's per-run configs)"
+    fi
     for base in "$DT_REPO"/config/config_*.yaml; do
         case "$base" in *_tuned.yaml) continue ;; esac
         tuned="${base%.yaml}_tuned.yaml"

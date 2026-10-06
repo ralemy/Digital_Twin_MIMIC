@@ -26,6 +26,8 @@ __pycache__/
 # Only hand-edited configs (config_alliance_*.yaml, tuning_grid.yaml,
 # profile.sample.yml, ...) are tracked.
 config/*_tuned.yaml
+# jobs/run_all.sh's per-run configs (a link to $DT_RESULTS_DIR/tuned-configs on Trillium)
+/tuned_configs
 
 # jobs/run_all.sh state and logs
 run_all/
