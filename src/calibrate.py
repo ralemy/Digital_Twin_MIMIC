@@ -40,17 +40,32 @@ from common import LLM_CONDITIONS, ensure_work_dirs, get_logger, load_config, pa
 from evaluate_results import per_patient_smape
 from harmonization_agent import build_tensors
 from metrics import interval_coverage, mean_interval_width
-from pipeline import fit_models, run_condition, validate_conditions
+from common import hard_ranges
+from forecasting_agent import postprocess_arrays, postprocess_params
+from pipeline import ensemble_result, ensembles, fit_models, run_condition, validate_conditions
 from run_experiment import load_cohort_and_panel, split_tensors
 from tune import DEFAULT_GRID, _digest, load_grid, validation_subsets
 
 log = get_logger("calibrate")
 
 
+# Post-processing parameters tried per LLM condition (fit_postprocess).
+# Bounded so the model always keeps a share of the forecast: anchor weight 1
+# with damping 0 would replace it by the recent_mean baseline outright (the
+# end-to-end test with a mock LLM fitted exactly that), and the condition
+# would no longer measure the LLM.
+DAMPING_GRID = (0.1, 0.25, 0.5, 0.75, 1.0)
+ANCHOR_GRID = (0.0, 0.25, 0.5, 0.75)
+
+
 def calibration_key(cfg: dict, condition: str, train_ids) -> str:
     """Identifies the condition's settings independently of which patients
     were forecast, so evaluate_results.py can check the factors were fitted
-    for the same settings as the test forecasts."""
+    for the same settings as the test forecasts. An ensemble's key is made of
+    its members' keys."""
+    members = ensembles(cfg).get(condition)
+    if members:
+        return _digest([calibration_key(cfg, m, train_ids) for m in members])
     fp = condition_fingerprint(cfg, condition, train_ids, [])
     fp.pop("test_ids", None)
     return _digest(fp)
@@ -76,6 +91,34 @@ def apply_factors(y_pred, y_lower, y_upper, factors: dict, variables: list[str])
         lo[..., i] = y_pred[..., i] - f * (y_pred[..., i] - y_lower[..., i])
         hi[..., i] = y_pred[..., i] + f * (y_upper[..., i] - y_pred[..., i])
     return lo, hi
+
+
+def fit_postprocess(result: dict, obs: np.ndarray, cfg: dict, base: str) -> tuple[dict, dict]:
+    """The post-processing parameters (drift damping, level anchor weight)
+    that minimise mean per-patient sMAPE on these patients, chosen over
+    DAMPING_GRID x ANCHOR_GRID from the forecasts before post-processing
+    (result["y_raw"]), so no LLM call is repeated. A condition with a critic
+    is scored after clipping to the plausible range, its critic's last step.
+    Returns (params, {"smape_config": ..., "smape_fitted": ...})."""
+    variables = [v["name"] for v in cfg["variables"]]
+    hard = np.array([hard_ranges(cfg)[var] for var in variables])
+    plausible = np.array([v["plausible_range"] for v in cfg["variables"]], dtype=float)
+    critic = base in ("full_pipeline", "full_pipeline_no_similarity", "full_pipeline_clip_critic")
+    window = postprocess_params(cfg)["level_window_hours"]
+
+    def forecast(params):
+        out = postprocess_arrays(result["y_raw"], obs, params, hard)
+        return np.clip(out, plausible[:, 0], plausible[:, 1]) if critic else out
+
+    best, best_score = None, np.inf
+    for lam in DAMPING_GRID:
+        for w in ANCHOR_GRID:
+            params = {"drift_damping": lam, "level_anchor_weight": w, "level_window_hours": window}
+            score = float(np.nanmean(per_patient_smape(result["y_true"], forecast(params))))
+            if score < best_score - 1e-12:
+                best, best_score = params, score
+    configured = float(np.nanmean(per_patient_smape(result["y_true"], result["y_pred"])))
+    return best, {"smape_config": configured, "smape_fitted": best_score, "y_pred": forecast(best)}
 
 
 def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
@@ -111,22 +154,17 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
               "conditions": {}}
     smape_path = out_path.parent / "calibration_smape.npz"
     per_patient = {}
+    results = {}                # per condition, for the ensembles
+    fit_pp = bool((cfg.get("forecasting_agent") or {}).get("fit_postprocess", False))
 
-    for condition in cfg["conditions"]:
-        base, variant = split_condition(condition)
-        if (base in LLM_CONDITIONS and variant is None and "forecaster" not in fitted) \
-                or (base in ("gbm", "lstm") and base not in fitted):
-            log.warning("Skipping '%s' — model not built for this config.", condition)
-            continue
-        fp = condition_fingerprint(cfg, condition, train_ids, calib_ids)
-        result = run_condition(condition, cfg, splits["train"], calib, fitted,
-                               checkpoint=checkpoint.condition(condition, fp),
-                               progress=tracking.progress_logger("calibrate/"))
-        tracking.log_errors(f"calibrate/{condition}", result["llm_errors"])
+    def record(condition: str, result: dict, extra: dict) -> None:
+        """Conformal factors etc. of one condition's calibration forecasts
+        into calibration.json (rewritten after each condition)."""
         halfwidth = (result["y_upper"] - result["y_lower"]) / 2
         factors = {var: conformal_factor(result["y_true"][..., i], result["y_pred"][..., i],
                                          halfwidth[..., i], alpha) for i, var in enumerate(variables)}
         lo, hi = apply_factors(result["y_pred"], result["y_lower"], result["y_upper"], factors, variables)
+        pp = per_patient_smape(result["y_true"], result["y_pred"])
         output["conditions"][condition] = {
             "key": calibration_key(cfg, condition, train_ids),
             "factors": factors,
@@ -136,14 +174,9 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
             "width_before": {var: mean_interval_width(result["y_lower"][..., i], result["y_upper"][..., i])
                              for i, var in enumerate(variables)},
             "width_after": {var: mean_interval_width(lo[..., i], hi[..., i]) for i, var in enumerate(variables)},
-            "llm_fallbacks": result["llm_fallbacks"],
-            "llm_fallback_rate": (result["llm_fallbacks"] / max(1, len(result["stay_ids"]))
-                                  if result["llm_fallbacks"] is not None else None),
-            "llm_filled": (dict(zip(variables, map(int, result["llm_filled"])))
-                           if result["llm_filled"] is not None else None),
+            "smape_mean": float(np.nanmean(pp)),
+            **extra,
         }
-        pp = per_patient_smape(result["y_true"], result["y_pred"])
-        output["conditions"][condition]["smape_mean"] = float(np.nanmean(pp))
         per_patient[condition] = pp
         log.info("Condition '%s': factors %s; calibration-set coverage %.3f -> %.3f",
                  condition, {k: (round(v, 2) if v else v) for k, v in factors.items()},
@@ -159,6 +192,48 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
         tracking.log_metrics({"calibrate/conditions_done": len(output["conditions"]),
                               **{f"calibrate/{condition}/{k}": c[k] for k in
                                  ("coverage_before", "coverage_after") if c[k] is not None}})
+
+    for condition in cfg["conditions"]:
+        base, variant = split_condition(condition)
+        if (base in LLM_CONDITIONS and variant is None and "forecaster" not in fitted) \
+                or (base in ("gbm", "lstm") and base not in fitted):
+            log.warning("Skipping '%s' — model not built for this config.", condition)
+            continue
+        fp = condition_fingerprint(cfg, condition, train_ids, calib_ids)
+        result = run_condition(condition, cfg, splits["train"], calib, fitted,
+                               checkpoint=checkpoint.condition(condition, fp),
+                               progress=tracking.progress_logger("calibrate/"))
+        tracking.log_errors(f"calibrate/{condition}", result["llm_errors"])
+        extra = {
+            "llm_fallbacks": result["llm_fallbacks"],
+            "llm_fallback_rate": (result["llm_fallbacks"] / max(1, len(result["stay_ids"]))
+                                  if result["llm_fallbacks"] is not None else None),
+            "llm_filled": (dict(zip(variables, map(int, result["llm_filled"])))
+                           if result["llm_filled"] is not None else None),
+        }
+        if fit_pp and base in LLM_CONDITIONS and not np.all(np.isnan(result["y_raw"])):
+            # Post-processing fitted for this condition on the calibration
+            # patients, from its forecasts before post-processing; the factors
+            # below are then fitted to the post-processed forecasts, and
+            # run_experiment.py applies the same parameters to the test ones.
+            obs = np.stack([calib[sid]["obs"] for sid in result["stay_ids"]])
+            params, fit = fit_postprocess(result, obs, cfg, base)
+            halfwidth = (result["y_upper"] - result["y_lower"]) / 2
+            result = {**result, "y_pred": fit["y_pred"], "y_lower": fit["y_pred"] - halfwidth,
+                      "y_upper": fit["y_pred"] + halfwidth}
+            extra["postprocess"] = params
+            extra["postprocess_fit"] = {k: fit[k] for k in ("smape_config", "smape_fitted")}
+            log.info("Condition '%s': post-processing fitted on the calibration patients: drift_damping %.2f, "
+                     "level_anchor_weight %.2f (sMAPE %.4f with the config's settings -> %.4f)", condition,
+                     params["drift_damping"], params["level_anchor_weight"], fit["smape_config"], fit["smape_fitted"])
+        results[condition] = result
+        record(condition, result, extra)
+
+    for name, members in ensembles(cfg).items():
+        if all(m in results for m in members):
+            record(name, ensemble_result([results[m] for m in members]), {"members": members})
+        else:
+            log.warning("Skipping ensemble '%s' — a member was skipped.", name)
 
     log.info("Calibration factors written to %s — evaluate_results.py applies them to the test forecasts.", out_path)
 

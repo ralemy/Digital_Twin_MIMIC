@@ -17,6 +17,59 @@ chained with `--dependency=afterany`.
 
 ---
 
+## 0. Current estimates — measured on Trillium (October 2026)
+
+The sections after this one are the original Nibi analysis. These numbers
+replace its estimates. They are measured from the second lean run on
+Trillium (`tri_lean_exp2`, one H100 per job, `OLLAMA_NUM_PARALLEL=8`, flash
+attention on), then adjusted for the current configs: Med42-70B is now the
+primary model (`llm.model`), and tuning no longer searches `drift_damping`.
+
+**Measured per LLM condition** (lean, 450 test patients; calibration on 322
+patients takes 0.72× as long):
+
+| Model | Minutes per condition |
+|---|---|
+| Qwen2.5-32B | 29–36 |
+| Baichuan-M2-32B | 37–38 |
+| Gemma 3 27B / MedGemma 27B | 40–50 |
+| MedGemma with a Gemma 3 critic (two models per batch) | 66 |
+| Llama-3-70B / Med42-70B | 55–58 |
+
+A tuning evaluation (128 patients) took 9.7 min with Qwen; Med42 takes about
+1.55× as long (~15 min).
+
+**Lean run, current configs** (minutes of GPU work; each job's limit is at
+most 8 h, so the driver chains jobs):
+
+| Stage | `tri_lean_exp2` (measured) | Estimate now | Why it changed |
+|---|---|---|---|
+| models | 2 (already present) | 2 (90 if downloading) | — |
+| resolve + extract | 6 | 6 | — |
+| tune | 258 (26 Qwen evaluations) | ~330 (20 Med42 evaluations) | slower primary model, `drift_damping` round removed |
+| calibrate | 560 | ~600 | Med42 runs the 4 primary conditions; post-processing fit and ensembles add seconds |
+| run | 740 | ~800 | same |
+| evaluate | 2 | 2 | — |
+| **total** | **~26 h** wall, queue waits included | **~29 h** of GPU work, plus queue waits | |
+
+**Full run (19 variables)** — not yet run on Trillium. The estimate scales
+the lean LLM time by 3.7×, the ratio of answer lengths (and of time per
+forecast) measured in the Nibi pilot (section 3):
+
+| Stage | Estimate | 8 h jobs |
+|---|---|---|
+| tune | ~1,140 min (19 h) | 3 |
+| calibrate | ~2,160 min (36 h) | 6 |
+| run | ~2,900 min (48 h) | 7 |
+| **total** | **~103 GPU-hours, ~4.5 days** plus queue waits | 16 |
+
+`jobs/run_all.sh` uses these numbers (`EST_LEAN`, `EST_FULL`). If a stage
+runs over, the driver submits more jobs from the checkpoints, so an
+underestimate costs queue time, not work. The first full run should be used
+to replace the 3.7× factor with measured numbers.
+
+---
+
 ## 1. What the logs measured
 
 ### Steps 1–2 (CPU)

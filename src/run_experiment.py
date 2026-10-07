@@ -48,9 +48,10 @@ from common import (
     parse_step_args,
     split_condition,
 )
+from forecasting_agent import postprocess_params
 from harmonization_agent import build_tensors
 from metrics import evaluate_twin
-from pipeline import fit_models, run_condition, validate_conditions
+from pipeline import ensemble_result, ensembles, fit_models, run_condition, validate_conditions
 
 log = get_logger("run_experiment")
 
@@ -74,6 +75,30 @@ def split_tensors(tensors: dict[int, dict], cohort: pd.DataFrame) -> dict[str, d
             out[split][sid] = t
     for split, d in out.items():
         log.info("%s split: %d patients", split, len(d))
+    return out
+
+
+def fitted_postprocess(cfg: dict, results_dir: Path, train_ids) -> dict[str, dict]:
+    """Per LLM condition, the post-processing parameters calibrate.py fitted
+    on the calibration patients (calibration.json), where they were fitted
+    for this condition's settings; other conditions use the config's."""
+    import json
+    from calibrate import calibration_key        # calibrate imports this module
+
+    path = results_dir / "calibration.json"
+    if not path.exists():
+        return {}
+    out = {}
+    for condition, entry in json.loads(path.read_text())["conditions"].items():
+        if entry.get("postprocess") is None or condition not in cfg["conditions"]:
+            continue
+        if entry["key"] != calibration_key(cfg, condition, train_ids):
+            log.warning("Post-processing fitted for '%s' used other settings — using the config's.", condition)
+            continue
+        out[condition] = entry["postprocess"]
+    if out:
+        log.info("Using post-processing fitted on the calibration patients for %d condition(s) (%s).",
+                 len(out), path)
     return out
 
 
@@ -103,6 +128,7 @@ def main(config_path: str, full_refresh: bool = False) -> None:
     results_dir = Path(cfg["paths"]["results_dir"])
     variables = [v["name"] for v in cfg["variables"]]
     summary_rows = []
+    fitted_pp = fitted_postprocess(cfg, results_dir, train_ids)
 
     for condition in cfg["conditions"]:
         base, variant = split_condition(condition)
@@ -128,8 +154,10 @@ def main(config_path: str, full_refresh: bool = False) -> None:
         elif base in ("full_pipeline", "full_pipeline_no_similarity"):
             cv = critic_variant(cfg, variant)
             critic_model = ollama_model_name(cfg_for_llm_variant(cfg, cv)["llm"]) if cv else llm_model
+        pp = fitted_pp.get(condition)
+        pp_used = (pp or postprocess_params(cfg)) if needs_llm else {}
         cond_checkpoint = checkpoint.condition(
-            condition, condition_fingerprint(cfg, condition, train_ids, test_ids))
+            condition, condition_fingerprint(cfg, condition, train_ids, test_ids, postprocess=pp))
         batch_size = max(1, int(cfg.get("performance", {}).get("checkpoint_batch_size", 32)))
         done_rows = cond_checkpoint.load_rows(n_batches=-(-len(test_ids) // batch_size))
         if done_rows is not None:
@@ -142,8 +170,10 @@ def main(config_path: str, full_refresh: bool = False) -> None:
             log.info("Condition '%s' uses LLM '%s'%s.", condition, llm_model,
                      f" (critic: {critic_model})" if critic_model and critic_model != llm_model else "")
 
+        if pp:
+            log.info("Condition '%s': post-processing fitted on the calibration patients: %s", condition, pp)
         result = run_condition(condition, cfg, splits["train"], splits["test"], fitted_models,
-                               checkpoint=cond_checkpoint, progress=tracking.progress_logger())
+                               checkpoint=cond_checkpoint, progress=tracking.progress_logger(), postprocess=pp)
         tracking.log_errors(condition, result["llm_errors"])
 
         # Share of test patients whose LLM forecast failed (no answer, bad
@@ -208,6 +238,9 @@ def main(config_path: str, full_refresh: bool = False) -> None:
                 # Whole condition (all variables), full_pipeline* only.
                 "precritic_violation_rate": precritic / n_cells if precritic is not None else None,
                 "critic_llm_fixed_share": ((precritic - clipped) / precritic) if precritic else None,
+                # The post-processing applied (LLM conditions).
+                "drift_damping": pp_used.get("drift_damping"),
+                "level_anchor_weight": pp_used.get("level_anchor_weight"),
             })
 
         # Saving the rows marks the condition finished: a resumed run skips it.
@@ -215,6 +248,33 @@ def main(config_path: str, full_refresh: bool = False) -> None:
         summary_rows.extend(condition_rows)
         _write_summary(summary_rows, results_dir)
         _track_condition(condition, condition_rows, len(summary_rows) // max(1, len(variables)))
+
+    # Ensembles: the mean of their members' saved test forecasts.
+    for name, members in ensembles(cfg).items():
+        paths = [results_dir / f"{m}_raw.npz" for m in members]
+        if not all(p.exists() for p in paths):
+            log.warning("Skipping ensemble '%s' — results of a member are missing.", name)
+            continue
+        loaded = []
+        for p in paths:
+            with np.load(p) as z:
+                loaded.append({k: z[k] for k in ("y_true", "y_pred", "y_lower", "y_upper", "stay_ids")})
+        result = ensemble_result(loaded)
+        np.savez_compressed(results_dir / f"{name}_raw.npz", y_true=result["y_true"], y_pred=result["y_pred"],
+                            y_lower=result["y_lower"], y_upper=result["y_upper"],
+                            stay_ids=np.array(result["stay_ids"]))
+        report = evaluate_twin(result["y_true"], result["y_pred"], variables,
+                               y_lower=result["y_lower"], y_upper=result["y_upper"])
+        (results_dir / f"{name}_summary.txt").write_text(report.summary_table())
+        log.info("Ensemble '%s' (%s) complete:\n%s", name, " + ".join(members), report.summary_table())
+        rows = [{"condition": name, "variable": var, "smape": pm["smape"], "mae": pm["mae"], "rmse": pm.get("rmse"),
+                 "ks_statistic": report.ks_results.get(var, {}).get("ks_statistic"),
+                 "plausibility_violation_rate": report.plausibility_violations.get(var),
+                 "interval_coverage": report.coverage_by_var.get(var),
+                 "mean_interval_width": report.width_by_var.get(var)}
+                for var, pm in report.point_metrics.items()]
+        summary_rows.extend(rows)
+        _track_condition(name, rows, len(summary_rows) // max(1, len(variables)))
 
     _write_summary(summary_rows, results_dir)
     log.info("All conditions complete. Combined summary: %s", results_dir / "all_conditions_summary.csv")

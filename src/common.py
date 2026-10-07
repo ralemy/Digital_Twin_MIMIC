@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import yaml
 
 DEFAULT_CONFIG_PATH = "config/config_alliance_lean.yaml"   # when --config-file is omitted
@@ -75,6 +76,22 @@ def valid_ranges(cfg: dict) -> dict[str, tuple[float, float]]:
     rate 0 were in the Trillium lean panel) and are dropped before they reach
     any model, prompt or ground truth (extract_cohort.py, build_tensors)."""
     return {v["name"]: tuple(v.get("valid_range") or v["plausible_range"]) for v in cfg["variables"]}
+
+
+def hard_ranges(cfg: dict) -> dict[str, tuple[float, float]]:
+    """Per variable, the values that are physically possible: `hard_range`
+    if the variable sets one (e.g. SpO2 [0, 100]), else [0, inf) for a
+    variable whose plausible range is non-negative, else unbounded. Every LLM
+    forecast is clipped to it, critic or not — unlike the plausible range,
+    which only the critic enforces (Trillium tri_lean_exp2: single-model
+    conditions forecast SpO2 up to 135 %)."""
+    out = {}
+    for v in cfg["variables"]:
+        if v.get("hard_range"):
+            out[v["name"]] = tuple(float(x) for x in v["hard_range"])
+        else:
+            out[v["name"]] = (0.0, np.inf) if v["plausible_range"][0] >= 0 else (-np.inf, np.inf)
+    return out
 
 
 def write_run_config(config_path: str, run_name: str, out_path: str) -> Path:

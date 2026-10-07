@@ -2,8 +2,9 @@
 
 This page explains how the experiment's results are evaluated, why each
 metric was chosen (and others weren't), what the first full lean run on
-Trillium taught us and what we changed because of it, and how the
-hyperparameters are tuned (section 4). Every number comes from that run, or from re-analysing
+Trillium taught us and what we changed because of it, how the
+hyperparameters are tuned (section 4), and what the second run
+(`tri_lean_exp2`) showed and changed (section 5). Every number comes from that run, or from re-analysing
 its saved forecasts. The run's full write-up is in its results folder
 (`README.md` next to `mimic-iv-twin-work/`).
 
@@ -49,11 +50,20 @@ Every condition forecasts the same 450 test patients, so all comparisons are
 - **Conventional baselines:** naive (last value carried forward), GBM (one
   gradient-boosted regressor per variable and forecast hour), LSTM
   (sequence-to-sequence).
+- **Stronger persistence (added after the second run):** `recent_mean` (the
+  mean of the last 6 observed hours, held flat) and `persistence_blend` (half
+  the last value + half the 24 h mean). An LLM that beats only the naive
+  baseline may just be estimating a better level.
 - **LLM conditions:** `single_model_llm` (the LLM alone, DT-GPT style),
   `full_pipeline` (similarity agent + forecaster + critic), and three
   ablations of it: `_no_critic`, `_no_similarity` and `_clip_critic`. Each
-  runs with the primary model (Qwen2.5-32B) and, as `@variant`, with the other
-  local models.
+  runs with the primary model and, as `@variant`, with the other local
+  models. The primary model was Qwen2.5-32B in the first two runs and
+  Med42-70B since then (section 5); Qwen stays in the comparison as the
+  `qwen2_5_32b` variant.
+- **Ensembles (added after the second run):** e.g. `full_pipeline+lstm`, the
+  mean of its members' forecasts, built from the saved forecasts at no GPU
+  cost and compared with each member.
 
 ### 1.4 The steps
 
@@ -61,9 +71,11 @@ Every condition forecasts the same 450 test patients, so all comparisons are
    round tries a few settings and keeps one only if it lowers the mean
    per-patient sMAPE by at least 0.002, with at most 10 % of LLM forecasts
    falling back to naive.
-2. **Calibrate** (`calibrate.py`, on the 322 calibration patients). For each
-   condition and variable, a split-conformal factor scales the forecast's
-   interval so it covers about 90 % of outcomes (section 2.3).
+2. **Calibrate** (`calibrate.py`, on the 322 calibration patients). Since
+   the third run it first fits each LLM condition's post-processing (drift
+   damping and level anchor, section 5.3) from its saved forecasts. Then,
+   for each condition and variable, a split-conformal factor scales the
+   forecast's interval so it covers about 90 % of outcomes (section 2.3).
 3. **Run** (`run_experiment.py`, on the 450 test patients). Every condition's
    forecasts are saved (`<condition>_raw.npz`) and scored per variable
    (`all_conditions_summary.csv`, `<condition>_summary.txt`).
@@ -497,3 +509,97 @@ lean.
 - k = 100: 50 was the largest value tried, and it won.
 - A trial combining `trend_hint: damped` with `drift_damping`, in case the
   prompt change alone is not enough.
+
+
+---
+
+## 5. The second lean run (`tri_lean_exp2`): what we learned and changed
+
+The run's full write-up is in its results folder (`README.md` next to
+`mimic-iv-twin-work/`). Its test patients are almost all new: the artefact
+filter changed which stays were eligible, and only 6 of the 450 overlap with
+the first run. That largely answers limitation 1 of section 3.4. The changes
+were diagnosed on the first run's test patients and confirmed here on new
+ones.
+
+### 5.1 What the section 3.5 checks showed
+
+| Check | Result |
+|---|---|
+| Any LLM condition better than naive? | Yes. Best: Med42 and Llama-3-70B pipelines, 0.111 vs 0.123 (p ≈ 1e-22). Every LLM pipeline beat naive |
+| Distance to the best classic model | Level with GBM (0.1115, p = 0.07); 0.001 behind LSTM (0.1094, p = 0.06), now the best method |
+| Trend coefficients | Single models moved from 0.95–1.5 to between −0.11 and +0.09 (truth −0.06 to −0.15) |
+| Lactate | No forecasts of 0; sMAPE on unobserved-lactate patients about 0.4 instead of 2.0 |
+| RQ2 | Before the critic, 0.05 % of values were out of range, and its LLM fixed all of them; no accuracy effect (p = 0.37). Clipping does as well |
+| Intervals | They now widen 1.7–2× over the horizon, but conformal factors are still 3–11×; after calibration, LLM widths match LSTM's |
+| Tuning | `trend_hint: damped` and `drift_damping: 0.25` won (objective 0.160 → 0.126); damping values 0.5 to 0 all scored within 0.002 |
+
+### 5.2 What we learned
+
+1. **The LLMs mostly estimate a level.** With damping at 0.25 the forecast is
+   nearly flat. The best pipelines tie simple persistence: half the last value
+   plus half the window mean scores 0.1107; the 6 h mean, 0.1127.
+2. **They anchor on the noisiest level.** The LLM's hour-1 value is the last
+   reading (mean difference about 0.01). A 6 h mean is a better level than
+   the last value (0.1127 vs 0.1229).
+3. **They carry information the classic models don't.** Averaging Med42's
+   pipeline with LSTM gives 0.1075, better than LSTM alone (p = 0.0008) and
+   better than GBM + LSTM (0.1082). In the first run, averaging with a
+   baseline never helped.
+4. **RQ1 depends on the model.** For Qwen, the primary model, the full
+   pipeline is now slightly *worse* than the single model (0.1214 vs 0.1199,
+   p = 0.025): damping does the job the similarity context used to do. For
+   the other five models the pipeline still wins (by 0.003–0.021).
+5. **Two output faults.** Single-model Med42 produced values like
+   −3 × 10⁹ for 4 patients, and single models forecast SpO2 above 100 % in
+   70–631 cells. sMAPE hides both, but they corrupt MAE, RMSE and bias, and
+   they are impossible values for a digital twin.
+
+### 5.3 What we changed
+
+| Change | From finding |
+|---|---|
+| **Output sanitising:** a variable with non-finite values, or values outside 10× its valid range, is filled like a left-out variable; every LLM forecast is clipped to the variable's `hard_range` (SpO2 [0, 100]; others ≥ 0). This is a physical limit, not a plausibility check, so the critic comparison is unaffected | 5 |
+| **Level anchor:** post-processing moves hour 1 a share `level_anchor_weight` of the way to the mean of the last 6 observed hours, before damping | 1, 2 |
+| **Post-processing fitted per condition:** `calibrate.py` chooses `drift_damping` (0.1–1) and `level_anchor_weight` (0–0.75) for each LLM condition on the calibration patients, from the forecasts saved before post-processing (no LLM calls), and `run_experiment.py` applies them on the test patients | 1, 2, and the damping plateau in tuning |
+| **Persistence baselines** `recent_mean`, `persistence_blend` | 1 |
+| **Ensemble** `full_pipeline+lstm` | 3 |
+| **Primary model Med42-70B**, Qwen kept as a variant | 4 |
+
+### 5.4 Hyperparameter changes, and why
+
+- **The `drift_damping` tuning round was removed.** Damping is
+  post-processing, so it doesn't change what the LLM is asked. Re-running the
+  LLM for each value (6 evaluations, about 1.5 GPU-hours with Med42) is
+  wasted. Fitting it per condition from saved forecasts is free and lets
+  each model have its own value.
+- **The fitting grid is bounded.** Damping is at least 0.1 and the anchor
+  weight at most 0.75. Without the bounds the fit can choose "anchor 1,
+  damping 0", which *replaces* the LLM by the `recent_mean` baseline. The
+  end-to-end test with a mock LLM did exactly that. The condition must keep
+  measuring the LLM.
+- **Tuning is now done with Med42**, the new primary model, so the prompt
+  settings are chosen for the model the RQs are reported on.
+- **The tuning starting point is `drift_damping: 0.25`** (the last tuned
+  value) in the base configs. Later tuning rounds are then scored on damped
+  forecasts, as the final ones will be.
+- **Unchanged:** the acceptance rule, the 128-patient tuning subset, and the
+  other rounds.
+
+**Cost of fitting on the calibration patients.** The same 322 patients now
+fit two post-processing parameters per condition and then the conformal
+factors. Two parameters on 322 patients carry little risk of overfitting, but
+the conformal coverage guarantee strictly needs patients the parameters
+weren't fitted on. Read coverage within about ±0.02 of 0.90 as calibrated.
+
+### 5.5 What the third run should be judged on
+
+- **Primary (Med42) full pipeline:** about 0.110 or better, and its
+  comparison with `recent_mean` and `persistence_blend`. Beating them is the
+  claim that the LLM adds more than a level.
+- **The fitted parameters:** an anchor weight above 0 for most LLM
+  conditions confirms finding 2; damping near 1 for a model would mean its
+  trends have become useful.
+- **The ensemble** `full_pipeline+lstm` against LSTM.
+- **RQ1 with Med42** (single model 0.131 vs pipeline 0.111 in this run).
+- **No impossible values:** all MAE/RMSE finite and plausible; SpO2 ≤ 100.

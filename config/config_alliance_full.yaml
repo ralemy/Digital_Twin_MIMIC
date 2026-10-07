@@ -79,6 +79,7 @@ variables:
     label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
     exclude_patterns: ["Alarm", "Limit", "Sensor"]   # drops SpO2 alarm thresholds, "SpO2 Desat Limit", sensor-placement checkbox
     plausible_range: [50, 100]
+    hard_range: [0, 100]                        # physically possible; every LLM forecast is clipped to it
     unit: "%"
   - name: map
     source: icu_chartevents
@@ -183,17 +184,22 @@ deterioration_labels:
 llm:
   backend: "ollama"
   ollama_host: "http://127.0.0.1:11434"
-  model: "qwen2.5:32b-instruct-q8_0"
-  alias: "qwen2.5:32b"
+  # Primary model since tri_lean_exp2: M42 Health's Llama3-Med42-70B
+  # (Med42-v2, clinical fine-tune of Llama 3 70B), community GGUF conversion;
+  # fits fully onto one H100. Its full pipeline was the most accurate LLM
+  # condition there; Qwen2.5-32B, the primary of the first two runs, is now
+  # the qwen2_5_32b variant.
+  model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
+  alias: "med42:70b"
   temperature: 0.2
   max_tokens: 4096   # JSON for 19 variables x 24 h is ~2,500-3,500 tokens; 1800 would truncate every forecast
   request_timeout_s: 600   # a 19-variable forecast takes ~2-2.5 min at the median (~3.7x the lean one); the lean tail reached 4x the median
-  num_ctx: 12288
+  num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
   # Model comparison (docs/llm_selection.docx): three general/medical pairs,
   # each medical model a fine-tune of its general partner.
-  #   ~32B, Q8_0:   qwen2.5:32b (llm.model above, primary) / baichuan_m2
+  #   ~32B, Q8_0:   qwen2_5_32b / baichuan_m2
   #   ~27B, Q4_K_M: gemma3 / medgemma
-  #   ~70B, Q4_K_M: llama3_70b / llama_Med42_70b
+  #   ~70B, Q4_K_M: llama3_70b / Med42-70B (llm.model above, primary)
   # A variant is used by appending '@<name>' to an LLM condition in
   # `conditions` (e.g. full_pipeline@medgemma); it inherits every llm key
   # above and overrides only what it lists. A variant may set
@@ -203,41 +209,57 @@ llm:
   variants:
     baichuan_m2:
       # Baichuan-M2-32B: medical fine-tune of Qwen2.5-32B (Apache 2.0, not
-      # gated). Q8_0 to match the primary model's quantization. A reasoning
+      # gated). Q8_0 to match Qwen2.5-32B's quantization. A reasoning
       # model: with Ollama's default it reasoned past max_tokens on every
       # forecast, leaving the answer empty (probe jobs 1033722, 1034050);
       # think: false turns the reasoning off and it answers in ~800 tokens.
       model: "hf.co/bartowski/baichuan-inc_Baichuan-M2-32B-GGUF:Q8_0"   # ~35GB
       alias: "baichuan-m2:32b"
+      num_ctx: 12288    # the default (8192) is Llama 3's; this model takes the longer context
       think: false
     gemma3:
       model: "gemma3:27b"                                       # Q4_K_M, ~17GB
+      num_ctx: 12288
     medgemma:
       # MedGemma 27B text (v1): medical fine-tune of Gemma 3 27B. Use is
       # governed by Google's Health AI Developer Foundations terms.
       model: "hf.co/unsloth/medgemma-27b-text-it-GGUF:Q4_K_M"   # ~17GB
       alias: "medgemma:27b"
+      num_ctx: 12288
     medgemma_gemma3_critic:
       # MedGemma forecasts, Gemma 3 corrects implausible values: does a
       # different critic model help? (Compared in evaluation.extra_comparisons.)
       model: "hf.co/unsloth/medgemma-27b-text-it-GGUF:Q4_K_M"
       alias: "medgemma:27b"
+      num_ctx: 12288
       critic_variant: gemma3
     llama3_70b:
       # Llama 3 70B Instruct: Med42's base model (Meta Llama 3 Community Licence).
       model: "llama3:70b-instruct-q4_K_M"                       # ~43GB
       num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
-    llama_Med42_70b:
-      # M42 Health's Llama3-Med42-70B (Med42-v2, clinical fine-tune of Llama 3
-      # 70B), community GGUF conversion; fits fully onto one H100.
-      model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
-      alias: "med42:70b"
-      num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
+    qwen2_5_32b:
+      # Qwen2.5-32B Instruct, Baichuan-M2's base model; the primary model of
+      # the first two Trillium runs.
+      model: "qwen2.5:32b-instruct-q8_0"                        # ~34GB
+      alias: "qwen2.5:32b"
+      num_ctx: 12288
 
-# Forecasting prompt and output (src/forecasting_agent.py). trend_hint,
-# drift_damping and cohort_anchor are tuned by src/tune.py
-# (config/tuning_grid.yaml) from their defaults (slope, 1.0, false).
+# Forecasting prompt and output (src/forecasting_agent.py). trend_hint and
+# cohort_anchor are tuned by src/tune.py (config/tuning_grid.yaml) from their
+# defaults (slope, false).
 forecasting_agent:
+  # Post-processing (pipeline.py, after the LLM, before the critic): the
+  # forecast's hour 1 moved a share level_anchor_weight of the way to the mean
+  # of the last level_window_hours observed hours, then each hour's change
+  # from hour 1 times drift_damping. With fit_postprocess, calibrate.py fits
+  # both per condition on the calibration patients from the saved forecasts
+  # (no extra LLM calls) and run_experiment.py applies the fitted values; the
+  # values here are the starting point, used by tune.py.
+  # tri_lean_exp2: tuning chose drift_damping 0.25 (0.5 and 0 within 0.002).
+  drift_damping: 0.25
+  level_anchor_weight: 0.0
+  level_window_hours: 6
+  fit_postprocess: true
   # Interval half-widths the model gives: endpoints = one at the first and
   # one at the last hour, interpolated, so intervals can widen with lead time
   # for ~10 more output numbers; per_hour = all 24 per variable (about 60%
@@ -264,9 +286,14 @@ baselines:
 
 conditions:
   - naive
+  # Stronger persistence (baselines.persistence_forecast): the mean of the
+  # last 6 observed hours, and half the last value + half the window mean.
+  # tri_lean_exp2: the best LLM pipelines only tied them.
+  - recent_mean
+  - persistence_blend
   - gbm
   - lstm
-  # Primary model (llm.model, Qwen2.5-32B): RQ1-RQ3 and the ablations.
+  # Primary model (llm.model, Med42-70B): RQ1-RQ3 and the ablations.
   - single_model_llm
   - full_pipeline
   - full_pipeline_no_critic
@@ -286,8 +313,15 @@ conditions:
   - full_pipeline@medgemma_gemma3_critic
   - single_model_llm@llama3_70b
   - full_pipeline@llama3_70b
-  - single_model_llm@llama_Med42_70b
-  - full_pipeline@llama_Med42_70b
+  - single_model_llm@qwen2_5_32b
+  - full_pipeline@qwen2_5_32b
+
+# Ensembles (pipeline.ensembles): the mean of the members' forecasts and
+# interval half-widths, built after the members at no GPU cost.
+# tri_lean_exp2: Med42's full pipeline averaged with the LSTM beat the LSTM
+# alone (per-patient sMAPE 0.1075 vs 0.1094, p = 0.0008).
+ensembles:
+  - [full_pipeline, lstm]
 
 evaluation:
   bootstrap_resamples: 2000
@@ -309,6 +343,12 @@ evaluation:
     # primary pipeline?
     - [full_pipeline_clip_critic@medgemma, full_pipeline]
     - [full_pipeline@medgemma_gemma3_critic, full_pipeline]
+    # Does the primary pipeline beat stronger persistence, and does the
+    # ensemble beat each of its members?
+    - [full_pipeline, recent_mean]
+    - [full_pipeline, persistence_blend]
+    - [full_pipeline+lstm, lstm]
+    - [full_pipeline+lstm, full_pipeline]
 
 logging:
   # Live aggregate metrics on Weights & Biases (src/tracking.py): progress,

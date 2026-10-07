@@ -6,7 +6,11 @@
 #
 # The archive holds, for whatever exists of the run:
 #   logs/                       $DT_LOGS_ROOT/<run>/ (driver log, job .out
-#                               files, Ollama logs)
+#                               files, Ollama logs), plus the run's Ollama
+#                               logs found directly in $DT_LOGS_ROOT (by the
+#                               job ids in run_all/<run>/*.state): jobs before
+#                               run_all.sh passed --log-dir wrote them there
+#                               on Trillium
 #   mimic-iv-twin-work/         $DT_RESULTS_DIR/mimic-iv-twin-work/<run>/ (lean)
 #   mimic-iv-twin-work-full/    $DT_RESULTS_DIR/mimic-iv-twin-work-full/<run>/ (full)
 #   tuned_configs/              tuned_configs/<run>/ (the run's config and tuned config)
@@ -27,7 +31,7 @@
 # =============================================================================
 set -uo pipefail
 
-usage() { sed -n '3,23p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 RUN_NAME=""; OUT_DIR="$PWD"; INCLUDE_CHECKPOINTS=0; PROFILE_ARGS=()
 while [ $# -gt 0 ]; do
@@ -54,9 +58,8 @@ source "$(cd "$(dirname "$0")" && pwd)/load_profile.sh" || exit 1
 load_profile "${PROFILE_ARGS[@]}" || exit 1
 cd "$DT_REPO" || exit 1
 
-# <name in the archive>:<directory of this run>
+# <name in the archive>:<directory of this run> (logs/ is assembled below)
 PARTS=(
-    "logs:$DT_LOGS_ROOT/$RUN_NAME"
     "mimic-iv-twin-work:$DT_RESULTS_DIR/mimic-iv-twin-work/$RUN_NAME"
     "mimic-iv-twin-work-full:$DT_RESULTS_DIR/mimic-iv-twin-work-full/$RUN_NAME"
     "tuned_configs:$DT_REPO/tuned_configs/$RUN_NAME"
@@ -65,10 +68,34 @@ PARTS=(
 # A staging directory of links named as in the archive; tar --dereference
 # stores what they point to under those names.
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/pack_run.XXXXXX") || exit 1
-cleanup() { rm -f "$STAGE"/*; rmdir "$STAGE"; }
+cleanup() { find "$STAGE" -mindepth 1 -type l -delete; rmdir "$STAGE/logs" 2>/dev/null; rmdir "$STAGE"; }
 trap cleanup EXIT
 
 found=()
+
+# logs/: everything in the run's log folder, plus its jobs' Ollama logs that
+# landed directly in $DT_LOGS_ROOT.
+mkdir "$STAGE/logs"
+n_logs=0
+if [ -d "$DT_LOGS_ROOT/$RUN_NAME" ]; then
+    for f in "$DT_LOGS_ROOT/$RUN_NAME"/*; do
+        [ -e "$f" ] && ln -s "$f" "$STAGE/logs/" && n_logs=$((n_logs + 1))
+    done
+fi
+n_extra=0
+for id in $(awk '{for (i = 4; i <= NF; i++) if ($i ~ /^[0-9]+$/) print $i}' run_all/"$RUN_NAME"/*.state 2>/dev/null | sort -u); do
+    for f in "$DT_LOGS_ROOT"/ollama-"$id".log "$DT_LOGS_ROOT"/ollama-"$id"-*.log; do
+        [ -e "$f" ] && [ ! -e "$STAGE/logs/$(basename "$f")" ] && ln -s "$f" "$STAGE/logs/" && n_extra=$((n_extra + 1))
+    done
+done
+if [ $((n_logs + n_extra)) -gt 0 ]; then
+    found+=(logs)
+    printf '   %-24s <- %s (%d files) + %d Ollama log(s) from %s\n' "logs/" "$DT_LOGS_ROOT/$RUN_NAME" \
+        "$n_logs" "$n_extra" "$DT_LOGS_ROOT"
+else
+    printf '   %-24s    not found: %s\n' "logs/" "$DT_LOGS_ROOT/$RUN_NAME"
+fi
+
 for part in "${PARTS[@]}"; do
     name=${part%%:*}; dir=${part#*:}
     if [ -d "$dir" ]; then

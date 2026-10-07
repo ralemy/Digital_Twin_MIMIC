@@ -10,13 +10,14 @@
 #
 # For each setting it restarts Ollama with it and forecasts the same 64
 # validation patients (the tuning subset; the test split is never read) with
-# full_pipeline on the default model (qwen2.5:32b):
+# full_pipeline on the default model (llm.model; qwen2.5:32b when this was
+# run, Med42-70B since tri_lean_exp2):
 #   np4_fa0  OLLAMA_NUM_PARALLEL=4, flash attention off   (current setting)
 #   np4_fa1  4, on
 #   np8_fa0  8, off
 #   np8_fa1  8, on                                       (the candidate)
 # Under np8_fa1 it also checks the models still fit in GPU memory at 8
-# request slots: Med42-70B (the largest) and qwen2.5 at the lean num_ctx
+# request slots: Med42-70B (the largest; llm.model) and qwen2.5 at the lean num_ctx
 # (8192) and at the 19-variable scope's num_ctx (12288).
 #
 # Output: one line per run in <results_dir>/ollama_bench/bench-<job id>.jsonl,
@@ -74,9 +75,9 @@ run_setting() {
     fi
     bench --label "$label" --parallel "$np"
     if [ "$label" = np8_fa1 ]; then
-        bench --label "$label" --probe llama_Med42_70b --num-ctx 8192
-        bench --label "$label" --probe llama_Med42_70b --num-ctx 12288
+        bench --label "$label" --probe default --num-ctx 8192
         bench --label "$label" --probe default --num-ctx 12288
+        bench --label "$label" --probe qwen2_5_32b --num-ctx 12288
     fi
     stop_ollama
 }

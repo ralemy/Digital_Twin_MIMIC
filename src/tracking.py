@@ -42,6 +42,7 @@ ERROR_MESSAGES = {
     "llm_server_error": "LLM server error - see logs for details",
     "llm_timeout": "LLM request timed out - see logs for details",
     "critic_correction_failed": "critic correction failed - see logs for details",
+    "absurd_values": "forecast held non-finite or absurd values (filled) - see logs for details",
 }
 
 _run = None

@@ -13,12 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from baselines import GBMBaseline, LSTMBaseline, naive_forecast
+from baselines import PERSISTENCE_BASELINES, GBMBaseline, LSTMBaseline, naive_forecast, persistence_forecast
 from checkpoint import ConditionCheckpoint, RunCheckpoint, model_fingerprint
-from common import (LLM_CONDITIONS, cfg_for_llm_variant, critic_variant, get_logger, llm_variants_in_use,
-                    split_condition, valid_ranges)
+from common import (LLM_CONDITIONS, cfg_for_llm_variant, critic_variant, get_logger, hard_ranges,
+                    llm_variants_in_use, split_condition, valid_ranges)
 from critic_agent import CriticAgent
-from forecasting_agent import ForecastingAgent
+from forecasting_agent import ForecastingAgent, postprocess_forecast, postprocess_params
 from harmonization_agent import naive_fill, reference_stats
 from llm_client import LocalLLM
 from similarity_agent import SimilarityAgent
@@ -61,8 +61,14 @@ def run_condition(
     fitted_models: dict,
     checkpoint: ConditionCheckpoint | None = None,
     progress=None,
+    postprocess: dict | None = None,
 ) -> dict:
     """
+    `postprocess`: an LLM condition's post-processing parameters
+    (forecasting_agent.postprocess_params; default: the config's). Its
+    forecasts before post-processing are returned too, as "y_raw", so
+    calibrate.py can fit the parameters per condition.
+
     Returns {"y_true": ..., "y_pred": ..., "y_lower": ..., "y_upper": ...,
              "plausibility_violations_precritic": int or None,
              "critic_clipped": int or None (of those, the values the critic
@@ -98,6 +104,8 @@ def run_condition(
     y_pred = np.full_like(y_true, np.nan)
     y_lower = np.full_like(y_true, np.nan)
     y_upper = np.full_like(y_true, np.nan)
+    y_raw = np.full_like(y_true, np.nan)
+    params = postprocess if postprocess is not None else postprocess_params(cfg)
     total_precritic_violations = 0
     total_clipped = 0
     total_fallbacks = 0
@@ -133,7 +141,7 @@ def run_condition(
                 # loads them (see llm_client.LOAD_TIMEOUT_S).
                 _load_models(agents)
                 models_loaded = True
-            batch = _predict_batch(condition, cfg, batch_ids, test_tensors, fitted_models, n_workers)
+            batch = _predict_batch(condition, cfg, batch_ids, test_tensors, fitted_models, n_workers, params)
             if checkpoint is not None:
                 checkpoint.save_batch(b, batch_ids, batch)
             if base in LLM_CONDITIONS:
@@ -150,6 +158,8 @@ def run_condition(
 
         rows = slice(start, start + len(batch_ids))
         y_pred[rows], y_lower[rows], y_upper[rows] = batch["y_pred"], batch["y_lower"], batch["y_upper"]
+        if batch.get("y_raw") is not None:
+            y_raw[rows] = batch["y_raw"]
         total_precritic_violations += batch["violations"]
         total_clipped += batch["clipped"]
         total_fallbacks += batch["fallbacks"]
@@ -164,6 +174,7 @@ def run_condition(
         "y_pred": y_pred,
         "y_lower": y_lower,
         "y_upper": y_upper,
+        "y_raw": y_raw if base in LLM_CONDITIONS else None,
         "stay_ids": stay_ids,
         "plausibility_violations_precritic": total_precritic_violations if "full_pipeline" in base else None,
         "critic_clipped": total_clipped if "full_pipeline" in base else None,
@@ -189,6 +200,7 @@ def _predict_batch(
     test_tensors: dict[int, dict],
     fitted_models: dict,
     n_workers: int,
+    postprocess: dict | None = None,
 ) -> dict:
     """Predictions for one batch of test patients: {"y_pred", "y_lower",
     "y_upper"} shaped (len(batch_ids), horizon_hours, n_variables), plus this
@@ -202,6 +214,9 @@ def _predict_batch(
     horizon_hours = cfg["cohort"]["forecast_horizon_hours"]
 
     shape = (len(batch_ids), horizon_hours, len(variables))
+    params = postprocess if postprocess is not None else postprocess_params(cfg)
+    hard = np.array([hard_ranges(cfg)[var] for var in variables])
+    y_raw = np.full(shape, np.nan)      # LLM forecasts before post-processing
     y_pred = np.full(shape, np.nan)
     y_lower = np.full(shape, np.nan)
     y_upper = np.full(shape, np.nan)
@@ -212,6 +227,15 @@ def _predict_batch(
         fill = naive_fill(fitted_models.get("reference"), variables)
         for pi, sid in enumerate(batch_ids):
             r = naive_forecast(test_tensors[sid]["obs"], horizon_hours, fill)
+            y_pred[pi] = r["forecast_array"]
+            y_lower[pi] = r["forecast_array"] - r["halfwidth_array"][None, :]
+            y_upper[pi] = r["forecast_array"] + r["halfwidth_array"][None, :]
+
+    elif base in PERSISTENCE_BASELINES:
+        fill = naive_fill(fitted_models.get("reference"), variables)
+        window = int(cfg["baselines"].get("recent_mean_hours", 6))
+        for pi, sid in enumerate(batch_ids):
+            r = persistence_forecast(test_tensors[sid]["obs"], horizon_hours, base, window, fill)
             y_pred[pi] = r["forecast_array"]
             y_lower[pi] = r["forecast_array"] - r["halfwidth_array"][None, :]
             y_upper[pi] = r["forecast_array"] + r["halfwidth_array"][None, :]
@@ -254,8 +278,11 @@ def _predict_batch(
         forecaster: ForecastingAgent = llm_agents["forecaster"]
 
         def _single_model_worker(sid):
-            raw = forecaster.forecast(test_tensors[sid]["obs"], similarity_context=None)
-            return _llm_forecast_to_arrays(raw, variables, horizon_hours)
+            obs = test_tensors[sid]["obs"]
+            raw = forecaster.forecast(obs, similarity_context=None)
+            fcast, interval = _llm_forecast_to_arrays(
+                postprocess_forecast(raw, obs, variables, params, hard), variables, horizon_hours)
+            return fcast, interval, _llm_forecast_to_arrays(raw, variables, horizon_hours)[0]
 
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
             # Each Ollama HTTP call releases the GIL while waiting on I/O, so a
@@ -264,7 +291,8 @@ def _predict_batch(
             # in the config and the matching OLLAMA_NUM_PARALLEL note in the
             # README. Results are collected via map(), which preserves order,
             # so y_pred[pi] still lines up with batch_ids[pi].
-            for pi, (fcast, interval) in enumerate(ex.map(_single_model_worker, batch_ids)):
+            for pi, (fcast, interval, raw_fcast) in enumerate(ex.map(_single_model_worker, batch_ids)):
+                y_raw[pi] = raw_fcast
                 y_pred[pi] = fcast
                 y_lower[pi] = fcast - interval
                 y_upper[pi] = fcast + interval
@@ -281,19 +309,22 @@ def _predict_batch(
 
         def _forecast_worker(sid):
             sim_ctx = similarity.query(test_tensors[sid]["obs"]) if use_similarity else None
-            return forecaster.forecast(test_tensors[sid]["obs"], similarity_context=sim_ctx)
+            return sid, forecaster.forecast(test_tensors[sid]["obs"], similarity_context=sim_ctx)
 
-        def _critic_worker(raw):
+        def _critic_worker(sid_raw):
+            # Post-processing first, so the critic reviews the final forecast.
+            sid, raw = sid_raw
+            post = postprocess_forecast(raw, test_tensors[sid]["obs"], variables, params, hard)
             if use_critic:
-                reviewed = critic.review(raw)
+                reviewed = critic.review(post)
                 final_forecast = {"forecast": reviewed["forecast"], "interval_halfwidth": raw["interval_halfwidth"]}
                 violations, clipped = reviewed["violations_before_correction"], reviewed["clipped_values"]
             else:
-                final_forecast = raw
+                final_forecast = post
                 violations = clipped = 0
 
             fcast, interval = _llm_forecast_to_arrays(final_forecast, variables, horizon_hours)
-            return fcast, interval, violations, clipped
+            return fcast, interval, violations, clipped, _llm_forecast_to_arrays(raw, variables, horizon_hours)[0]
 
         # A critic on another model (critic_variant): forecast the whole batch,
         # then review it, so Ollama switches models twice per batch. Run per
@@ -313,7 +344,8 @@ def _predict_batch(
                 results = ex.map(_critic_worker, raws)
             else:
                 results = ex.map(lambda sid: _critic_worker(_forecast_worker(sid)), batch_ids)
-            for pi, (fcast, interval, violations, clipped) in enumerate(results):
+            for pi, (fcast, interval, violations, clipped, raw_fcast) in enumerate(results):
+                y_raw[pi] = raw_fcast
                 y_pred[pi] = fcast
                 y_lower[pi] = fcast - interval
                 y_upper[pi] = fcast + interval
@@ -327,6 +359,7 @@ def _predict_batch(
         "y_pred": y_pred,
         "y_lower": y_lower,
         "y_upper": y_upper,
+        "y_raw": y_raw if base in LLM_CONDITIONS else None,
         "violations": int(total_precritic_violations),
         "clipped": int(total_clipped),
         "fallbacks": int(llm_agents["forecaster"].n_fallbacks - fallbacks_before) if base in LLM_CONDITIONS else 0,
@@ -335,10 +368,32 @@ def _predict_batch(
     }
 
 
+def ensembles(cfg: dict) -> dict[str, list[str]]:
+    """`ensembles:` in the config, e.g. [[full_pipeline, lstm]], as
+    {"full_pipeline+lstm": ["full_pipeline", "lstm"]}. An ensemble is not
+    run: its forecast is the mean of its members' saved forecasts (and its
+    interval half-width the mean of theirs), computed by calibrate.py and
+    run_experiment.py after the members (Trillium tri_lean_exp2: Med42's
+    pipeline averaged with the LSTM beat the LSTM alone, p = 0.0008)."""
+    return {"+".join(members): list(members) for members in cfg.get("ensembles") or []}
+
+
+def ensemble_result(members: list[dict]) -> dict:
+    """The mean of member results (dicts with y_true, y_pred, y_lower,
+    y_upper, stay_ids over the same patients in the same order)."""
+    for m in members[1:]:
+        if list(m["stay_ids"]) != list(members[0]["stay_ids"]):
+            raise ValueError("ensemble members were run on different patients")
+    y_pred = np.mean([m["y_pred"] for m in members], axis=0)
+    halfwidth = np.mean([(m["y_upper"] - m["y_lower"]) / 2 for m in members], axis=0)
+    return {"y_true": members[0]["y_true"], "y_pred": y_pred, "y_lower": y_pred - halfwidth,
+            "y_upper": y_pred + halfwidth, "stay_ids": list(members[0]["stay_ids"])}
+
+
 def validate_conditions(cfg: dict) -> None:
     """Fail at startup, not hours into a run, on a misspelled condition or an
     undefined / misplaced LLM variant."""
-    known = ("naive", "gbm", "lstm") + LLM_CONDITIONS
+    known = ("naive", "gbm", "lstm") + PERSISTENCE_BASELINES + LLM_CONDITIONS
     for condition in cfg["conditions"]:
         base, variant = split_condition(condition)
         if base not in known:
@@ -353,6 +408,11 @@ def validate_conditions(cfg: dict) -> None:
             if critic_variant(cfg, cv) is not None:
                 raise ValueError(f"Condition '{condition}': critic variant '{cv}' sets its own "
                                  "critic_variant; a critic's model must be a plain variant")
+    for name, members in ensembles(cfg).items():
+        missing = [m for m in members if m not in cfg["conditions"]]
+        if len(members) < 2 or missing:
+            raise ValueError(f"Ensemble '{name}' needs at least two members, all in `conditions` "
+                             f"(missing: {missing})")
 
 
 def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpoint | None = None) -> dict:

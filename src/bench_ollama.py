@@ -12,7 +12,7 @@ Three modes:
                            doesn't change the forecasts' quality; at
                            temperature 0.2 and 64 patients a few % is noise).
   --probe VARIANT --num-ctx C
-                           load one LLM variant (e.g. llama_Med42_70b, or
+                           load one LLM variant (e.g. qwen2_5_32b, or
                            'default' for llm.model) with
                            num_ctx C, send one short request, and record from
                            Ollama's /api/ps how much of the model sits in VRAM
@@ -26,7 +26,7 @@ checkpointed — this measures speed, it isn't part of the experiment.
 
 Usage:
     python src/bench_ollama.py --config-file config/config_alliance_lean.yaml --label np4_fa0 --parallel 4
-    python src/bench_ollama.py --config-file config/config_alliance_lean.yaml --probe llama_Med42_70b --num-ctx 12288 --label np8_fa1
+    python src/bench_ollama.py --config-file config/config_alliance_lean.yaml --probe default --num-ctx 12288 --label np8_fa1
     python src/bench_ollama.py --config-file config/config_alliance_lean.yaml --summary
 Writes (appends):
     <results_dir>/ollama_bench/bench-<SLURM_JOB_ID>.jsonl

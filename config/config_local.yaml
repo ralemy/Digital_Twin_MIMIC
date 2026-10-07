@@ -60,6 +60,7 @@ variables:
     label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
     exclude_patterns: ["Alarm", "Limit", "Sensor"]   # drops SpO2 alarm thresholds, "SpO2 Desat Limit", sensor-placement checkbox
     plausible_range: [50, 100]
+    hard_range: [0, 100]           # physically possible; every LLM forecast is clipped to it
     unit: "%"
   - name: map
     source: icu_chartevents

@@ -20,6 +20,10 @@ forecast and interval; the model's forecasts for the others are kept. Both
 are counted per condition (n_fallbacks, n_filled) and reported with the
 results. A variable the patient has no observation of is filled with the
 training cohort's median (reference stats from pipeline.fit_models), not 0.
+A variable whose forecast holds a non-finite or absurd value (far outside
+its valid range; Med42 once returned -3e9) is treated as left out and filled
+the same way; every forecast is clipped to the variables' hard (physically
+possible) ranges, e.g. SpO2 <= 100 %.
 
 Prompt and output options (the `forecasting_agent:` config section, tuned by
 src/tune.py; each default reproduces the original prompt):
@@ -29,8 +33,10 @@ src/tune.py; each default reproduces the original prompt):
                             revert toward the mean rather than continue a trend
                   (Trillium lean run: single-model forecasts continued the
                   slope ~1:1 for 24 h while the patients reverted to the mean.)
-  drift_damping   1.0     : the forecast as given; lambda < 1 shrinks each
-                            hour's change from hour 1 by lambda (0 = flat)
+  drift_damping, level_anchor_weight, level_window_hours: post-processing
+                  of the forecast, applied by pipeline.py (postprocess_forecast;
+                  defaults 1.0, 0.0, 6 = none). calibrate.py can fit them per
+                  condition on the calibration patients (fit_postprocess).
   cohort_anchor   false   : true adds the training cohort's median [IQR] of
                             every variable to the prompt
   interval        constant: one interval half-width per variable
@@ -46,7 +52,7 @@ import warnings
 import numpy as np
 import requests
 
-from common import get_logger
+from common import get_logger, hard_ranges, valid_ranges
 from harmonization_agent import naive_fill, summarize_observation
 from llm_client import LocalLLM, extract_json_block
 
@@ -84,6 +90,52 @@ _INTERVAL_INSTRUCTIONS = {
         "at the last hour (end); the hours in between are interpolated. "
         "Uncertainty usually grows the further ahead the hour is."),
 }
+
+
+POSTPROCESS_DEFAULTS = {"drift_damping": 1.0, "level_anchor_weight": 0.0, "level_window_hours": 6}
+
+
+def postprocess_params(cfg: dict) -> dict:
+    """The forecasting_agent section's post-processing settings (defaults: none)."""
+    fa = cfg.get("forecasting_agent") or {}
+    params = {k: type(d)(fa.get(k, d)) for k, d in POSTPROCESS_DEFAULTS.items()}
+    for k in ("drift_damping", "level_anchor_weight"):
+        if not 0.0 <= params[k] <= 1.0:
+            raise ValueError(f"forecasting_agent.{k} must be in [0, 1], not {params[k]}")
+    if params["level_window_hours"] < 1:
+        raise ValueError("forecasting_agent.level_window_hours must be at least 1")
+    return params
+
+
+def postprocess_arrays(forecast: np.ndarray, obs: np.ndarray, params: dict, hard: np.ndarray) -> np.ndarray:
+    """forecast (..., horizon, n_vars) after post-processing, for obs
+    (..., obs_hours, n_vars):
+      1. level anchor: shift the whole forecast so hour 1 moves a share w
+         (level_anchor_weight) of the way from the model's hour 1 — in practice
+         the last reading, a single noisy value — to the mean of the last
+         level_window_hours observed hours (no observation there: no shift);
+      2. drift damping: each hour's change from hour 1 times lambda;
+      3. clip to the hard ranges (hard: (n_vars, 2)).
+    Vectorised so calibrate.py can fit the parameters on saved forecasts."""
+    out = np.array(forecast, dtype=float)
+    w, lam = params["level_anchor_weight"], params["drift_damping"]
+    if w > 0:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)   # no observation in the window
+            recent = np.nanmean(obs[..., -int(params["level_window_hours"]):, :], axis=-2)
+        shift = w * (recent - out[..., 0, :])
+        out = out + np.nan_to_num(shift)[..., None, :]
+    if lam < 1:
+        out = out[..., :1, :] + lam * (out - out[..., :1, :])
+    return np.clip(out, hard[:, 0], hard[:, 1])
+
+
+def postprocess_forecast(result: dict, obs: np.ndarray, variables: list[str], params: dict,
+                         hard: np.ndarray) -> dict:
+    """postprocess_arrays on one forecast dict (interval half-widths unchanged)."""
+    arr = np.array([result["forecast"][var] for var in variables], dtype=float).T   # (horizon, n_vars)
+    arr = postprocess_arrays(arr, obs, params, hard)
+    return {**result, "forecast": {var: arr[:, i].tolist() for i, var in enumerate(variables)}}
 
 
 def system_prompt(interval: str = "constant") -> str:
@@ -250,26 +302,26 @@ class ForecastingAgent:
         #   strict_length:      also state that every variable, observed or
         #                       not, needs exactly horizon_hours values
         #   recent_hours:       also list the last N hourly values (0 = none)
-        #   trend_hint, drift_damping, cohort_anchor, interval: see the
-        #                       module docstring
+        #   trend_hint, cohort_anchor, interval: see the module docstring
         fa = cfg.get("forecasting_agent") or {}
         self.similarity_context = fa.get("similarity_context", "horizon_mean")
         self.strict_length = bool(fa.get("strict_length", False))
         self.recent_hours = int(fa.get("recent_hours", 0))
         self.trend_hint = fa.get("trend_hint", "slope")
-        self.drift_damping = float(fa.get("drift_damping", 1.0))
         self.cohort_anchor = bool(fa.get("cohort_anchor", False))
         self.interval = fa.get("interval", "constant")
         if self.trend_hint not in TREND_HINTS:
             raise ValueError(f"forecasting_agent.trend_hint must be one of {TREND_HINTS}, not {self.trend_hint!r}")
         if self.interval not in INTERVAL_MODES:
             raise ValueError(f"forecasting_agent.interval must be one of {INTERVAL_MODES}, not {self.interval!r}")
-        if not 0.0 <= self.drift_damping <= 1.0:
-            raise ValueError(f"forecasting_agent.drift_damping must be in [0, 1], not {self.drift_damping}")
         if self.cohort_anchor and reference is None:
             raise ValueError("forecasting_agent.cohort_anchor needs the training cohort's reference stats")
         self.reference = reference
         self._fill = naive_fill(reference, self.variables)
+        # A value outside its valid range widened by 10x the range on each
+        # side is not a forecast (Med42: -2999999954): the variable is filled.
+        self._sane = {var: (lo - 10 * (hi - lo), hi + 10 * (hi - lo)) for var, (lo, hi) in valid_ranges(cfg).items()}
+        self._hard = hard_ranges(cfg)
         self.system_prompt = system_prompt(self.interval)
         self.schema = forecast_schema(self.variables, self.horizon_hours, self.interval)
         # How many forecast() calls fell back to the naive forecast. Reported
@@ -340,11 +392,15 @@ class ForecastingAgent:
             raw = self.llm.generate(prompt, system=self.system_prompt, json_mode=True, schema=self.schema)
             parsed = extract_json_block(raw)
             missing = self._validate_shape(parsed)
+            missing += self._absurd_variables(parsed, missing)
+            if len(missing) == len(self.variables):
+                raise ValueError("no usable variable in forecast")
             halfwidths = self._halfwidths(parsed, missing)
             if missing:
                 self._fill_missing(parsed, obs, missing)
-            if self.drift_damping < 1.0:
-                self._damp(parsed, missing)
+            for var in self.variables:
+                lo, hi = self._hard[var]
+                parsed["forecast"][var] = np.clip(np.asarray(parsed["forecast"][var], dtype=float), lo, hi).tolist()
             # One half-width per hour for every variable (filled ones: constant).
             parsed["interval_halfwidth"] = {
                 var: halfwidths.get(var) or [float(parsed["interval_halfwidth"][var])] * self.horizon_hours
@@ -385,13 +441,23 @@ class ForecastingAgent:
             out[var] = [abs(x) for x in vals]
         return out
 
-    def _damp(self, parsed: dict, missing: list[str]) -> None:
-        """drift_damping: each hour's change from hour 1 shrunk by lambda."""
+    def _absurd_variables(self, parsed: dict, missing: list[str]) -> list[str]:
+        """Variables whose forecast holds a non-finite value or one far
+        outside its valid range; they are filled like left-out ones and
+        counted as such (n_filled), plus under error_counts."""
+        out = []
         for var in self.variables:
             if var in missing:
                 continue
             vals = np.asarray(parsed["forecast"][var], dtype=float)
-            parsed["forecast"][var] = (vals[0] + self.drift_damping * (vals - vals[0])).tolist()
+            lo, hi = self._sane[var]
+            if not np.all(np.isfinite(vals)) or np.any((vals < lo) | (vals > hi)):
+                out.append(var)
+        if out:
+            log.warning("Forecast for %s holds non-finite or absurd values; filled instead.", ", ".join(out))
+            with self._fallback_lock:
+                self.error_counts["absurd_values"] = self.error_counts.get("absurd_values", 0) + len(out)
+        return out
 
     def _validate_shape(self, parsed: dict) -> list[str]:
         """Raises on output that can't be used; returns the variables the

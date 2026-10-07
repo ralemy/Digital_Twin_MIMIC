@@ -68,9 +68,10 @@ def atomic_path(path: Path):
 # What every model and condition depends on beyond the config: how the data
 # are prepared. v2: raw values outside each variable's valid range are dropped,
 # and a variable with no observations is filled with the training median
-# instead of 0 (naive forecast, LLM fallback, prompt). Checkpoints made
-# before that must not be reused.
-DATA_VERSION = "v2_valid_range_median_fill"
+# instead of 0 (naive forecast, LLM fallback, prompt). v3: LLM forecasts
+# are sanitised (absurd values filled, hard ranges clipped) and saved before
+# post-processing too. Checkpoints made before that must not be reused.
+DATA_VERSION = "v3_sanitised_llm_output"
 
 
 def _hash(obj) -> str:
@@ -103,7 +104,8 @@ def _set_keys(section: dict, keys) -> dict:
     return {k: section[k] for k in keys if k in section}
 
 
-def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids) -> dict:
+def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids,
+                          postprocess: dict | None = None) -> dict:
     """What a condition's predictions depend on. Baseline conditions depend on
     their fitted model; LLM conditions on the (variant's) llm settings plus
     the similarity and critic agents' settings."""
@@ -112,6 +114,12 @@ def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids) -> dic
           "train_ids": _ids_hash(train_ids), "test_ids": _ids_hash(test_ids), "data": DATA_VERSION}
     if base in ("lstm", "gbm"):
         fp.update({k: v for k, v in model_fingerprint(cfg, base, train_ids).items() if k == base})
+    if base in ("recent_mean", "persistence_blend"):
+        fp["recent_mean_hours"] = cfg["baselines"].get("recent_mean_hours", 6)
+    if postprocess is not None:
+        # Post-processing fitted per condition by calibrate.py, instead of
+        # the config's forecasting_agent values.
+        fp["postprocess"] = postprocess
     if base in LLM_CONDITIONS:
         fp["llm"] = {k: v for k, v in cfg_for_llm_variant(cfg, variant)["llm"].items() if k != "variants"}
         fp["similarity_agent"] = cfg["similarity_agent"]
@@ -231,6 +239,7 @@ class ConditionCheckpoint:
             return {k: z[k] for k in ("y_pred", "y_lower", "y_upper")} | {
                 "violations": int(z["violations"]), "fallbacks": int(z["fallbacks"]),
                 "clipped": int(z["clipped"]) if "clipped" in z.files else 0,
+                "y_raw": z["y_raw"] if "y_raw" in z.files else None,
                 # Baseline batches saved before per-variable fill counts existed.
                 "filled": z["filled"] if "filled" in z.files else np.zeros(z["y_pred"].shape[2], dtype=int)}
 
@@ -241,7 +250,8 @@ class ConditionCheckpoint:
                 np.savez(f, stay_ids=np.array(stay_ids),
                          y_pred=batch["y_pred"], y_lower=batch["y_lower"], y_upper=batch["y_upper"],
                          violations=batch["violations"], fallbacks=batch["fallbacks"],
-                         filled=batch["filled"], clipped=batch["clipped"])
+                         filled=batch["filled"], clipped=batch["clipped"],
+                         **({"y_raw": batch["y_raw"]} if batch.get("y_raw") is not None else {}))
 
     def load_rows(self, n_batches: int) -> list[dict] | None:
         """The condition's summary rows if it already finished, else None.

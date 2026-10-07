@@ -10,7 +10,8 @@
 #
 # load_profile:
 #   - takes the job's arguments, removes `--profile <file>` (or
-#     `--profile=<file>`) from them and leaves the rest in JOB_ARGS for the
+#     `--profile=<file>`) and `--log-dir <dir>` (DT_LOG_DIR, where the job's
+#     Ollama log goes) from them and leaves the rest in JOB_ARGS for the
 #     job. The profile is that file, else $DT_PROFILE, else
 #     ~/.config/dt_profile.yml (template: config/profile.sample.yml);
 #   - sources jobs/setup_bash.sh, which reads the profile's locations and
@@ -42,6 +43,13 @@ load_profile() {
                 DT_PROFILE="$2"; shift 2 ;;
             --profile=*)
                 DT_PROFILE="${1#--profile=}"; shift ;;
+            --log-dir)
+                # Where this job's Ollama log goes (jobs/run_all.sh: the run's
+                # folder). An argument, not the environment: Trillium starts
+                # jobs with a clean one (--export=NONE), so a DT_LOG_DIR set
+                # by the driver never reached tri_lean_exp2's jobs.
+                [ $# -ge 2 ] || { echo "== --log-dir needs a directory ==" >&2; return 1; }
+                DT_LOG_DIR="$2"; export DT_LOG_DIR; shift 2 ;;
             *)
                 JOB_ARGS+=("$1"); shift ;;
         esac

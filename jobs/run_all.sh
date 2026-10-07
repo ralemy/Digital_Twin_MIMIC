@@ -23,8 +23,9 @@
 #   $DT_LOGS_ROOT/<run>/                         driver log, job .out files,
 #                                                Ollama logs
 #   run_all/<run>/                               the driver's state files
-# So a new name starts from scratch (resolve and extract run again), and the
-# same name resumes. --status, --stop and --plan without --run-name use the
+# When every stage is done, the driver packs them (jobs/pack_run.sh) into
+# $DT_RESULTS_DIR/<run>_results.tar. So a new name starts from scratch
+# (resolve and extract run again), and the same name resumes. --status, --stop and --plan without --run-name use the
 # scope's latest run (run_all/<scope>.latest).
 #
 # Stages, each run by the job script already in jobs/:
@@ -106,17 +107,19 @@ declare -A SCRIPT=(
 # Estimated work in minutes (docs/runtime_estimates.md), for the 16 LLM
 # conditions in the configs at OLLAMA_NUM_PARALLEL=8 with flash attention
 # (performance.llm_max_concurrent_requests: 8, ollama_flash_attention: true).
-# Benchmark job 23198298 (qwen2.5:32b, full_pipeline, 64 patients) measured
-# 1.69x the speed of the 4-slot, no-flash-attention setting the pilot ran
-# with (~80 min per LLM condition on 450 patients). So lean: ~47 min per
-# condition for the 27-32B models; ~62 min for the two 70B models, assuming
-# only 1.3x for them (they fit at 8 slots, 63.6 GB, but their speed wasn't
-# measured). Calibration is 322/450 of the run; tuning is 27 qwen2.5
-# evaluations on 128 patients plus ~20 min of baselines and model loads.
-# full: the same with 3.7x the LLM time. models: ~78 GB to download at the
-# ~24 MB/s job 23132444 measured; near zero once everything is present.
-declare -A EST_LEAN=([models]=90 [resolve]=5 [extract]=10 [tune]=400 [calibrate]=600  [run]=840  [evaluate]=30)
-declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=1390 [calibrate]=2160 [run]=3020 [evaluate]=30)
+# Lean, measured on Trillium (tri_lean_exp2, H100, per condition on the 450
+# test patients): Qwen2.5-32B 29-36 min, Baichuan-M2 37-38, Gemma 3 /
+# MedGemma 40-50, MedGemma + Gemma 3 critic 66, Llama-3-70B / Med42-70B
+# 55-58. With Med42 as llm.model its 4 primary conditions run ~1.55x longer
+# than Qwen's did: run ~780 min of LLM work (tri_lean_exp2: 728, 12.3 h
+# wall), calibration (322 patients) ~580 (550, 9.3 h), tuning 20 Med42
+# evaluations of ~15 min on 128 patients plus ~30 min of baselines and model
+# loads (tri_lean_exp2: 26 Qwen evaluations of 9.7 min, 4.3 h). full: not
+# yet measured on Trillium; 3.7x the lean LLM time (19-variable answers),
+# from the Nibi pilot. models: ~78 GB to download at the ~24 MB/s job
+# 23132444 measured; near zero once everything is present (2 min there).
+declare -A EST_LEAN=([models]=90 [resolve]=5 [extract]=10 [tune]=330 [calibrate]=600  [run]=800  [evaluate]=30)
+declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=1140 [calibrate]=2160 [run]=2900 [evaluate]=30)
 
 usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -367,7 +370,8 @@ submit_chain() {
             # the rest of a chain once a job completes.
             [ "${DT_CLUSTER:-}" != trillium ] && dep+=(--kill-on-invalid-dep=yes)
         fi
-        if ! jid=$(bash jobs/submit.sh --parsable --time="$(hhmm "$m")" --output="$DT_LOG_DIR/%x-%j.out" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}"); then
+        # --log-dir: the job's Ollama log goes to this run's folder too.
+        if ! jid=$(bash jobs/submit.sh --parsable --time="$(hhmm "$m")" --output="$DT_LOG_DIR/%x-%j.out" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}" --log-dir "$DT_LOG_DIR"); then
             log "$stage: sbatch failed"
             [ ${#ids[@]} -gt 0 ] && scancel "${ids[@]}"
             return 1
@@ -443,7 +447,7 @@ run_on_login_node() {
     log "$stage: worker nodes have no internet access (environment.workers_have_internet: false)"
     log "$stage: running ${SCRIPT[$stage]} on this login node instead of submitting it; output: $out"
     state_set "$stage" running 1 login-node
-    if bash "${SCRIPT[$stage]}" "$(stage_config "$stage")" "${PROFILE_ARGS[@]}" > "$out" 2>&1; then
+    if bash "${SCRIPT[$stage]}" "$(stage_config "$stage")" "${PROFILE_ARGS[@]}" --log-dir "$DT_LOG_DIR" > "$out" 2>&1; then
         state_set "$stage" done 1 login-node
         log "$stage: COMPLETED"
         return 0
@@ -657,3 +661,11 @@ done
 
 log "== all stages done. RQ1-RQ3: $(cfg_path "$TUNED" results_dir)/statistical_analysis.json =="
 log "== per-condition metrics: $(cfg_path "$TUNED" results_dir)/all_conditions_summary.csv =="
+# The run's logs, results and configs in one tar next to the work
+# directories ($DT_RESULTS_DIR/<run>_results.tar), ready to copy off scratch.
+log "== packing the run: jobs/pack_run.sh $RUN_NAME =="
+if bash jobs/pack_run.sh "$RUN_NAME" -o "$DT_RESULTS_DIR" "${PROFILE_ARGS[@]}" >&2; then
+    log "== packed: $DT_RESULTS_DIR/${RUN_NAME}_results.tar =="
+else
+    log "== packing failed — run it by hand: bash jobs/pack_run.sh $RUN_NAME =="
+fi

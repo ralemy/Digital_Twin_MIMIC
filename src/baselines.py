@@ -65,6 +65,39 @@ def naive_forecast(obs: np.ndarray, horizon_hours: int,
     return {"forecast_array": forecast, "halfwidth_array": halfwidths}
 
 
+PERSISTENCE_BASELINES = ("recent_mean", "persistence_blend")
+
+
+def persistence_forecast(obs: np.ndarray, horizon_hours: int, mode: str, window_hours: int = 6,
+                         fill: list[tuple[float, float]] | None = None) -> dict:
+    """Two stronger persistence forecasts, flat over the horizon (Trillium
+    tri_lean_exp2: both beat the last value, and the best LLM pipelines only
+    tied them, so beating `naive` alone overstates what a model adds):
+      recent_mean       the mean of the last window_hours observed hours (the
+                        last value if none of them is observed)
+      persistence_blend half the last value + half the observation-window mean
+    Half-width as for naive (1.5 x the window's std); an unobserved variable
+    gets `fill` (the training median)."""
+    n_vars = obs.shape[1]
+    forecast = np.zeros((horizon_hours, n_vars))
+    halfwidths = np.zeros(n_vars)
+    for v in range(n_vars):
+        valid = obs[:, v][~np.isnan(obs[:, v])]
+        if len(valid) == 0:
+            forecast[:, v], halfwidths[v] = fill[v] if fill is not None else (0.0, 1.5)
+            continue
+        recent = obs[-window_hours:, v][~np.isnan(obs[-window_hours:, v])]
+        if mode == "recent_mean":
+            level = recent.mean() if len(recent) else valid[-1]
+        elif mode == "persistence_blend":
+            level = 0.5 * (valid[-1] + valid.mean())
+        else:
+            raise ValueError(f"unknown persistence baseline '{mode}'")
+        forecast[:, v] = level
+        halfwidths[v] = max(np.std(valid) if len(valid) > 1 else 1.0, 1e-3) * 1.5
+    return {"forecast_array": forecast, "halfwidth_array": halfwidths}
+
+
 # ---------------------------------------------------------------------------
 # Gradient-boosted trees
 # ---------------------------------------------------------------------------

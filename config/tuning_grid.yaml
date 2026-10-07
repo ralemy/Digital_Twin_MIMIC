@@ -13,11 +13,13 @@
 # similarity_agent.k_neighbors). The tuned settings apply to every model,
 # including the llm.variants used in the model comparison.
 #
-# Cost (Qwen2.5-32B, 128 patients = 4 batches): ~10-20 min per LLM condition
-# per setting not already evaluated; GBM/LSTM trials take about a minute.
-# Settings already evaluated (e.g. the incumbent of an earlier round) are
-# cached and cost nothing. This grid is 27 LLM evaluations, ~7 GPU-hours from
-# scratch (the Trillium lean tune took 3.5 h for the first 14).
+# Cost (lean, 128 patients = 4 batches), measured on Trillium: 9.7 min per
+# LLM evaluation with Qwen2.5-32B (tri_lean_exp2: 26 evaluations, 4.3 h),
+# ~15 min with Med42-70B, the primary model since then (its conditions run
+# ~1.55x slower). GBM/LSTM trials take about a minute. Settings already
+# evaluated (e.g. the incumbent of an earlier round) are cached and cost
+# nothing. This grid is 20 LLM evaluations, ~5.5 GPU-hours from scratch
+# (lean); the full scope's 19-variable answers take ~3.7x longer.
 # =============================================================================
 tuning:
   n_tune_patients: 128        # validation stays used for tuning; the rest (322) are kept for calibrate.py
@@ -65,12 +67,11 @@ tuning:
       trials:
         no_slope: {forecasting_agent.trend_hint: none}
         damped_note: {forecasting_agent.trend_hint: damped}
-    - name: drift_damping             # each hour's change from hour 1, x lambda
-      conditions: [single_model_llm, full_pipeline]
-      trials:
-        damp050: {forecasting_agent.drift_damping: 0.5}
-        damp025: {forecasting_agent.drift_damping: 0.25}
-        flat: {forecasting_agent.drift_damping: 0.0}
+    # drift_damping (and level_anchor_weight) are not tuned here any more:
+    # they only post-process the forecast, so calibrate.py fits them per
+    # condition from the saved forecasts with no LLM calls
+    # (forecasting_agent.fit_postprocess). tri_lean_exp2 tuned drift_damping
+    # here: 0.5 / 0.25 / 0 scored within 0.002; the configs start from 0.25.
     - name: cohort_anchor             # the training cohort's median [IQR] in the prompt
       conditions: [single_model_llm, full_pipeline]
       trials:

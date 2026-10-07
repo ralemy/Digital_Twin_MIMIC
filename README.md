@@ -329,12 +329,12 @@ The configs compare six models (~190 GB in total):
 
 | Model | Alias | Size | Source |
 |---|---|---|---|
-| `qwen2.5:32b-instruct-q8_0` (primary) | `qwen2.5:32b` | ~35 GB | Ollama library |
+| `qwen2.5:32b-instruct-q8_0` (variant `qwen2_5_32b`) | `qwen2.5:32b` | ~35 GB | Ollama library |
 | Baichuan-M2-32B Q8_0 | `baichuan-m2:32b` | ~35 GB | Hugging Face (bartowski) |
 | `gemma3:27b` | | ~17 GB | Ollama library |
 | MedGemma 27B text Q4_K_M | `medgemma:27b` | ~17 GB | Hugging Face (unsloth) |
 | `llama3:70b-instruct-q4_K_M` | | ~43 GB | Ollama library |
-| Llama3-Med42-70B Q4_K_M | `med42:70b` | ~43 GB | Hugging Face (mradermacher) |
+| Llama3-Med42-70B Q4_K_M (primary, `llm.model`) | `med42:70b` | ~43 GB | Hugging Face (mradermacher) |
 
 ```bash
 bash jobs/submit.sh jobs/prep2_download_models.sh config/config_alliance_lean.yaml
@@ -703,10 +703,20 @@ finished `mimic-iv-twin-work` folder to project space (Globus or `rsync`).
 
 ### Models and agent combinations
 
-The configs compare six models in three general/medical pairs: Qwen2.5-32B (primary) / Baichuan-M2-32B,
+The configs compare six models in three general/medical pairs: Qwen2.5-32B / Baichuan-M2-32B,
 Gemma 3 27B / MedGemma 27B, and Llama 3 70B / Med42-70B. Each runs
 `single_model_llm` and `full_pipeline`; the primary model also runs the RQ
-ablations (`full_pipeline_no_critic`, `full_pipeline_no_similarity`).
+ablations (`full_pipeline_no_critic`, `full_pipeline_no_similarity`). The
+primary model is Med42-70B (`llm.model`) since the second Trillium run, in
+which its pipeline was the most accurate LLM condition and Qwen2.5-32B, the
+earlier primary, was the one model the pipeline didn't help. Qwen is still
+compared, as the `qwen2_5_32b` variant.
+
+Two more kinds of condition make the comparison honest (see
+`docs/evaluation.md`, section 5): stronger persistence baselines
+(`recent_mean`, `persistence_blend`), and `ensembles` such as
+`full_pipeline+lstm`, the mean of two conditions' forecasts, built from their
+saved results at no GPU cost.
 
 Any LLM condition can run with another model by appending `@<variant>`,
 e.g. `full_pipeline@medgemma`, where the variant is defined under
@@ -749,8 +759,8 @@ tuned for the primary — state that as a limitation, or re-tune.
 
 Compared with the 1080 Ti `config_local.yaml` (same panel, cohort criteria and
 conditions): a larger cohort (`max_patients` 3000 vs 300; `null` for the
-full eligible cohort once timed), a stronger model (`qwen2.5:32b` vs
-`llama3.1:8b`), concurrent LLM requests (`performance.llm_max_concurrent_requests`,
+full eligible cohort once timed), stronger models (Med42-70B as primary
+and five more, vs `llama3.1:8b`), concurrent LLM requests (`performance.llm_max_concurrent_requests`,
 which the jobs also pass to Ollama as `OLLAMA_NUM_PARALLEL`;
 `performance.ollama_flash_attention` sets `OLLAMA_FLASH_ATTENTION`), a
 GPU-batched and larger LSTM baseline, checkpointing, and explicit DuckDB
