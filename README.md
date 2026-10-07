@@ -773,6 +773,7 @@ tuned_configs/<run>/                      run_all.sh's per-run config and tuned 
 jobs/setup_bash.sh                        reads your profile: locations, account, symlinks, .venv
 jobs/load_profile.sh                      sourced by every job: --profile, setup_bash.sh, PhysioNet credentials
 jobs/run_all.sh lean|full                 the whole pipeline as chained Slurm jobs (login node)
+jobs/pack_run.sh <run_name>               one run's logs, work dir and configs as <run_name>_results.tar
 jobs/submit.sh [opts] <job> [args]        submit one job adapted to the cluster (logs_dir, gpu_jobs_only)
 jobs/monitor-job.sh                       follow one job (login node)
 jobs/smoke_test.sh                        pre-flight: synthetic data, mocked LLM
