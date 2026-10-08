@@ -96,6 +96,9 @@ def config_for_conditions(cfg: dict, conditions: list[str]) -> dict:
     """cfg restricted to `conditions`, building only the models they need."""
     out = copy.deepcopy(cfg)
     out["conditions"] = list(conditions)
+    # Ensembles are built from finished conditions and never tuned: keep
+    # only those whose members are all among these conditions.
+    out["ensembles"] = [m for m in cfg.get("ensembles") or [] if all(c in conditions for c in m)]
     bases = {split_condition(c)[0] for c in conditions}
     out["baselines"]["run_gbm"] = "gbm" in bases
     out["baselines"]["run_lstm"] = "lstm" in bases
