@@ -165,6 +165,22 @@ class LocalLLM:
                              f"({body.get('eval_count', '?')} tokens generated) — raise llm.max_tokens in the config; "
                              f"output starts: {text[:150]!r}, ends: {text[-150:]!r}; "
                              f"{len(body.get('thinking') or '')} chars of reasoning (Ollama's thinking field)")
+        # A request whose prompt + answer filled the context window doesn't
+        # fail in Ollama: llama-server runs with --context-shift and silently
+        # drops early tokens, so the answer may have been written without
+        # part of the prompt. Fail it instead (the caller falls back and
+        # counts it). Lean requests used at most 2,187 of 8,192 tokens on
+        # Trillium (tri_lean_exp2); a 19-variable Med42 request is expected
+        # at ~7,500 of its 8,192. prompt_eval_count can undercount a prompt
+        # whose start was reused from the cache, so a request close to the
+        # limit may slip through: the full-scope probe checks the margin.
+        used = int(body.get("prompt_eval_count") or 0) + int(body.get("eval_count") or 0)
+        if used >= self.num_ctx:
+            raise ValueError(f"LLM context overflow: prompt + answer used {used} tokens of num_ctx="
+                             f"{self.num_ctx} ({body.get('prompt_eval_count', '?')} + "
+                             f"{body.get('eval_count', '?')}); Ollama shifts the context silently, "
+                             "so this answer may not have seen the whole prompt — raise llm.num_ctx "
+                             "if the model allows it, or shorten the prompt")
         return text
 
 

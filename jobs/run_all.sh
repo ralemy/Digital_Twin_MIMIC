@@ -7,12 +7,16 @@
 #   bash jobs/run_all.sh lean --status           # what's done / running
 #   bash jobs/run_all.sh lean --stop             # stop the driver (not the jobs)
 #   bash jobs/run_all.sh lean --run-name funny_rabbit   # resume / name a run
+#   bash jobs/run_all.sh full --until tune       # stop after a stage (run again without it to go on)
 # Other options: -i <seconds> (how often Slurm is checked, at least 60,
 # default 120), --foreground (don't detach), --redo-extract (re-run steps 1-2
 # even if their outputs exist), --profile <file> (passed on to every job),
 # --unattended (see "Unattended runs" below), --redo <stage,...> (run
 # finished stages again, e.g. after adding conditions: --redo calibrate,run,
-# evaluate; their checkpoints mean only new work is computed).
+# evaluate; their checkpoints mean only new work is computed), --until
+# <stage> (stop once that stage is done, e.g. to measure a scope's tuning
+# before committing GPU time to the rest; the same command without --until
+# then carries on from the next stage).
 #
 # Run names. Every run has a name (--run-name; default: a new random one
 # such as sassy_hammer, printed when the driver starts). All run_all calls
@@ -121,10 +125,10 @@ declare -A SCRIPT=(
 declare -A EST_LEAN=([models]=90 [resolve]=5 [extract]=10 [tune]=330 [calibrate]=600  [run]=800  [evaluate]=30)
 declare -A EST_FULL=([models]=90 [resolve]=5 [extract]=20 [tune]=1140 [calibrate]=2160 [run]=2900 [evaluate]=30)
 
-usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 ORIG_ARGS=("$@")
-SCOPE=""; ACTION=run; FOREGROUND=0; REDO_EXTRACT=0; UNATTENDED=0; REDO=""; RUN_NAME=""
+SCOPE=""; ACTION=run; FOREGROUND=0; REDO_EXTRACT=0; UNATTENDED=0; REDO=""; RUN_NAME=""; UNTIL=""
 PROFILE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -135,6 +139,8 @@ while [ $# -gt 0 ]; do
         --unattended) UNATTENDED=1; shift ;;
         --redo) REDO="${2:-}"; shift 2 ;;
         --redo=*) REDO="${1#--redo=}"; shift ;;
+        --until) UNTIL="${2:-}"; shift 2 ;;
+        --until=*) UNTIL="${1#--until=}"; shift ;;
         --plan) ACTION=plan; shift ;;
         --status) ACTION=status; shift ;;
         --stop) ACTION=stop; shift ;;
@@ -147,6 +153,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 SCOPE=${SCOPE:-lean}                # config/config_alliance_lean.yaml unless "full" is given
+if [ -n "$UNTIL" ] && [[ " ${STAGES[*]} " != *" $UNTIL "* ]]; then
+    echo "== --until: unknown stage '$UNTIL' (stages: ${STAGES[*]}) ==" >&2
+    exit 1
+fi
 if ! [[ "$INTERVAL" =~ ^[0-9]+$ ]] || [ "$INTERVAL" -lt 60 ]; then
     echo "== interval must be a whole number of seconds, at least 60 (Alliance: don't poll Slurm more often) ==" >&2
     exit 1
@@ -217,6 +227,8 @@ CONFIG="$RUN_CONFIG_DIR/$(basename "$BASE_CONFIG")"
 TUNED="${CONFIG%.yaml}_tuned.yaml"
 RERUN="bash jobs/run_all.sh $SCOPE --run-name $RUN_NAME"
 [ "$UNATTENDED" -eq 1 ] && RERUN+=" --unattended"
+CONTINUE="$RERUN"                   # after an --until stop: the same command without --until
+[ -n "$UNTIL" ] && RERUN+=" --until $UNTIL"
 
 RUN_DIR="run_all/$RUN_NAME"
 STATE="$RUN_DIR/$SCOPE.state"       # lines: <stage> <status> <round> <job ids...>
@@ -285,9 +297,14 @@ plan_chain() {
 stage_config() { case "$1" in models|resolve|extract|tune) echo "$CONFIG" ;; *) echo "$TUNED" ;; esac; }
 
 show_plan() {
-    local stage limits total=0 m
+    local stage limits total=0 m after_until=0
     echo "== $SCOPE scope, run $RUN_NAME ($CONFIG): planned jobs per stage (est. work -> time limits) =="
     for stage in "${STAGES[@]}"; do
+        if [ "$after_until" -eq 1 ]; then
+            printf '   %-10s not run (--until %s)\n' "$stage" "$UNTIL"
+            continue
+        fi
+        [ "$stage" = "$UNTIL" ] && after_until=1
         limits=""
         if on_login_node "$stage"; then
             limits="on the login node, no Slurm job (workers have no internet) "
@@ -563,6 +580,7 @@ if [ "$FOREGROUND" -eq 0 ]; then
     if driver_alive; then
         echo "== a driver is already running ($(cat "$DRIVER" 2>/dev/null)) — following its log =="
         [ -n "$REDO" ] && echo "== --redo ignored: it applies when a driver starts; stop this one first (--stop) ==" >&2
+        [ -n "$UNTIL" ] && echo "== --until ignored: it applies when a driver starts; stop this one first (--stop) ==" >&2
         read -r d_host d_pid 2>/dev/null < "$DRIVER"
     else
         rm -f "$STOP_FILE"
@@ -656,6 +674,10 @@ for stage in "${STAGES[@]}"; do
         log "== item mapping written: $(cfg_path "$CONFIG" cache_dir)/item_mapping.json"
         log "== REVIEW it (see docs/resolve_items.md), then run the same command again to continue =="
         exit 3
+    fi
+    if [ "$stage" = "$UNTIL" ]; then
+        log "== --until $UNTIL: stopping after stage '$stage' as asked. To go on with the next stages: $CONTINUE =="
+        exit 0
     fi
 done
 

@@ -194,6 +194,8 @@ def error_kind(e: Exception) -> str:
         return "llm_server_error"
     if "truncated at max_tokens" in str(e):
         return "truncated_forecast"
+    if "context overflow" in str(e):
+        return "context_overflow"
     return "malformed_forecast"
 
 

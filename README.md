@@ -583,6 +583,7 @@ bash jobs/run_all.sh lean --unattended           # a whole run with no one watch
 bash jobs/run_all.sh full                        # full scope — only if your approval covers it
 bash jobs/run_all.sh lean --status               # stage status, job ids, whether the driver is alive (latest run)
 bash jobs/run_all.sh lean --stop                 # stop the driver; submitted jobs keep running (latest run)
+bash jobs/run_all.sh full --until tune           # stop once a stage is done; the same command without --until goes on
 ```
 
 **Run names.** Every run has a name: `--run-name <name>`, or a new random

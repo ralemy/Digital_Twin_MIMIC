@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
+# jobs/run_all.sh imports this module with the system Python
+# ($DT_SYS_PYTHON: the standard library and PyYAML only), before any module
+# or .venv is loaded: keep module-level imports to those two (no numpy).
 import yaml
 
 DEFAULT_CONFIG_PATH = "config/config_alliance_lean.yaml"   # when --config-file is omitted
@@ -90,7 +92,7 @@ def hard_ranges(cfg: dict) -> dict[str, tuple[float, float]]:
         if v.get("hard_range"):
             out[v["name"]] = tuple(float(x) for x in v["hard_range"])
         else:
-            out[v["name"]] = (0.0, np.inf) if v["plausible_range"][0] >= 0 else (-np.inf, np.inf)
+            out[v["name"]] = (0.0, float("inf")) if v["plausible_range"][0] >= 0 else (float("-inf"), float("inf"))
     return out
 
 
