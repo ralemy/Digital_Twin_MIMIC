@@ -303,13 +303,34 @@ def resample_and_filter(cfg: dict, eligible_stays: pd.DataFrame, item_mapping: d
         .rename(columns={"hour_bin": "hour", "valuenum": "value"})
     )
 
-    n_vars = eligible_stays.attrs.get("n_vars", len(item_mapping))
-    expected_bins = total_h * n_vars
-    coverage = panel.groupby("stay_id").size() / expected_bins
-    keep_stays = coverage[coverage >= c["min_panel_coverage"]].index
+    n_eligible = eligible_stays["stay_id"].nunique()
+    if c.get("coverage_rule", "all") == "vitals_plus_labs":
+        # Labs are drawn once or twice a day, so pooled hourly coverage over a
+        # lab-heavy panel can't reach the threshold (19 variables: ~39% at
+        # best). Apply the threshold to the hourly vitals only, and require
+        # every lab at least once in the observation window.
+        sources = {v["name"]: v.get("source") for v in cfg["variables"]}
+        vitals = [v for v, s in sources.items() if s == "icu_chartevents" and v in item_mapping]
+        labs = [v for v, s in sources.items() if s == "hosp_labevents" and v in item_mapping]
+        vit = panel[panel["variable"].isin(vitals)]
+        coverage = vit.groupby("stay_id").size() / (total_h * len(vitals))
+        pass_vitals = set(coverage[coverage >= c["min_panel_coverage"]].index)
+        obs_labs = panel[panel["variable"].isin(labs) & (panel["hour"] < obs_h)]
+        n_labs_seen = obs_labs.groupby("stay_id")["variable"].nunique()
+        pass_labs = set(n_labs_seen[n_labs_seen == len(labs)].index)
+        keep_stays = pd.Index(sorted(pass_vitals & pass_labs))
+        log.info("Coverage rule vitals_plus_labs: %d / %d stays reach %.0f%% coverage on the %d vitals; "
+                 "%d / %d have all %d labs in the first %d h; %d pass both.",
+                 len(pass_vitals), n_eligible, c["min_panel_coverage"] * 100, len(vitals),
+                 len(pass_labs), n_eligible, len(labs), obs_h, len(keep_stays))
+    else:
+        n_vars = eligible_stays.attrs.get("n_vars", len(item_mapping))
+        expected_bins = total_h * n_vars
+        coverage = panel.groupby("stay_id").size() / expected_bins
+        keep_stays = coverage[coverage >= c["min_panel_coverage"]].index
 
     log.info("Stays passing %.0f%% panel-coverage threshold: %d / %d",
-              c["min_panel_coverage"] * 100, len(keep_stays), eligible_stays["stay_id"].nunique())
+              c["min_panel_coverage"] * 100, len(keep_stays), n_eligible)
 
     cohort = eligible_stays[eligible_stays["stay_id"].isin(keep_stays)].copy()
     if c["max_patients"] is not None and len(cohort) > c["max_patients"]:

@@ -48,6 +48,12 @@ cohort:
   # criteria (Section 5.3/5.4). Expect fewer than 3000 eligible patients
   # before max_patients even applies.
   min_panel_coverage: 0.5
+  # Pooled over all 19 variables, 50% passed 21 / 36132 stays (Fir run
+  # fir_full_tune): labs are drawn once or twice a day, capping coverage
+  # near 39%. vitals_plus_labs applies min_panel_coverage to the hourly
+  # chartevents vitals and requires each lab at least once in the
+  # observation window. "all" (the default) is the pooled rule.
+  coverage_rule: vitals_plus_labs
   observation_window_hours: 24
   forecast_horizon_hours: 24
   resample_freq_minutes: 60
