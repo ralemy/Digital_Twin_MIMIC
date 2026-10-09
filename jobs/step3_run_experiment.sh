@@ -42,7 +42,7 @@
 #SBATCH --job-name=mimic-twin-step3-experiment
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=64000M
+#SBATCH --mem=128000M   # 64000M: Med42 runner OOM-killed every ~3.5 min on Fir (job 63824169, MaxRSS 65.5G); 1/4 of a Fir GPU node is ~281G
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/%x-%j.out   # relative to the repo base; run_all.sh overrides it
 
