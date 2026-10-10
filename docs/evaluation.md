@@ -669,11 +669,15 @@ LLM. The 0.0018 gap to LSTM is several times that.
   coverage within ±0.02 of 0.90, lactate included, with `zero_interval`
   counted.
 - **RQ2 run** (`config/config_alliance_lean_rq2.yaml`): exp3.4's cohort and
-  tuned settings with the critic before post-processing; Med42
+  tuned settings with the critic before post-processing, on Llama-3-70B:
   `full_pipeline`, `full_pipeline_no_critic`, `full_pipeline_clip_critic`.
-  Judged on the share of values out of range before the critic, the share
-  its LLM fixes rather than clips, and sMAPE against no critic and against
-  clipping. Run it only if `src/raw_violations.py` finds violations in
-  exp3.4's raw forecasts; if it finds about none, RQ2 is a null result at
-  this scope: the models don't produce implausible values.
-
+  `src/raw_violations.py` on exp3.4 decided the model: before
+  post-processing, Med42's forecasts were all plausible (0 of 450 test
+  patients), while the other models had 0.01–0.56 % of values out of range,
+  every one *below* the range, mostly lactate under 0.1 mmol/L and
+  respiratory rate under 4. Llama-3-70B, Med42's base model, had the most
+  in its pipeline (53 of 450 patients) and tied Med42 for accuracy.
+  Post-processing removed every one of them in every condition. Judged on
+  the share its LLM critic fixes rather than clips, and sMAPE against no
+  critic and against clipping; with 0.56 % of values affected, an sMAPE
+  difference is unlikely to exceed the 0.0003–0.0005 re-run noise.

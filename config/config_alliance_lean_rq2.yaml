@@ -8,8 +8,15 @@
 # 0 implausible values in every condition, so RQ2 measured nothing. Here it
 # reviews the LLM's own output instead. Same cohort and split as
 # tri_lean_exp3.4 (random_seed 42), and its tuned prompt settings, fixed
-# below, so its full_pipeline (critic after post-processing) is a fourth arm,
-# paired by stay_id. Only the RQ2 conditions run.
+# below, so its full_pipeline@llama3_70b (critic after post-processing) is a
+# fourth arm, paired by stay_id. Only the RQ2 conditions run.
+#
+# The model is Llama-3-70B, not Med42: in tri_lean_exp3.4's forecasts before
+# post-processing (src/raw_violations.py), Med42's were all plausible (0 of
+# 450 test patients; 1 of 322 calibration patients), so a critic has nothing
+# to fix. Llama-3-70B, Med42's base model, tied it for accuracy (0.1096 vs
+# 0.1095) and had the most violations of any pipeline: 53 of 450 test
+# patients, 0.56 % of values, all below the range, mostly lactate.
 #
 # Everything else is config_alliance_lean.yaml; keep the two in step. Its
 # header (approvals, CPU/RAM, Ollama) applies here too.
@@ -202,17 +209,17 @@ baselines:
   run_naive: true
   run_gbm: false                   # not needed for RQ2
   run_lstm: false
-  run_single_model_llm: true
+  run_single_model_llm: false      # no Med42 condition: don't load it
   lstm_hidden_size: 128
   lstm_epochs: 200
   lstm_checkpoint_every_epochs: 20   # LSTM training checkpoint interval (resume after a stop)
 
 conditions:
   - naive
-  # RQ2 with Med42 (llm.model): LLM critic vs none vs clipping.
-  - full_pipeline
-  - full_pipeline_no_critic
-  - full_pipeline_clip_critic
+  # RQ2 with Llama-3-70B: LLM critic vs none vs clipping.
+  - full_pipeline@llama3_70b
+  - full_pipeline_no_critic@llama3_70b
+  - full_pipeline_clip_critic@llama3_70b
 
 # Ensembles (pipeline.ensembles): the mean of the members' forecasts and
 # interval half-widths, built after the members at no GPU cost.
@@ -228,14 +235,14 @@ evaluation:
   # pre-specified analysis) plus any LLM variant chosen on validation data
   # by src/select_rq_model.py (it adds the variant here with --write-config,
   # together with the conditions RQ2 needs, e.g. full_pipeline_no_critic@<v>).
-  rq_models: [primary]
+  rq_models: [llama3_70b]            # RQ2 under RQ_model@llama3_70b (RQ1 is skipped: no single model)
   # Extra paired comparisons [A, B] (A - B per-patient sMAPE, as for the
   # RQs) in statistical_analysis.json under extra_comparisons.
   extra_comparisons:
     # Does the LLM critic beat clipping? (RQ2 itself, LLM critic vs none,
     # is in statistical_analysis.json under RQ2_*.)
-    - [full_pipeline_clip_critic, full_pipeline]
-    - [full_pipeline_clip_critic, full_pipeline_no_critic]
+    - [full_pipeline_clip_critic@llama3_70b, full_pipeline@llama3_70b]
+    - [full_pipeline_clip_critic@llama3_70b, full_pipeline_no_critic@llama3_70b]
 
 logging:
   # Live aggregate metrics on Weights & Biases (src/tracking.py): progress,
@@ -255,7 +262,7 @@ logging:
 # split as the standard grid).
 tuning_grid: config/tuning_grid_none.yaml
 
-# jobs/run_all.sh: work estimates (minutes) for 3 Med42 conditions (~57 min
-# each on Trillium's H100s; more allowed here for Nibi).
+# jobs/run_all.sh: work estimates (minutes) for 3 Llama-3-70B conditions
+# (55-58 min each on Trillium's H100s; more allowed here for Nibi).
 run_all:
   estimates_min: {tune: 30, calibrate: 200, run: 260}
