@@ -303,6 +303,18 @@ def llm_models_in_use(cfg: dict) -> list[str]:
     return list(dict.fromkeys(models))
 
 
+def llm_models_for_tuning(cfg: dict, grid: dict) -> list[str]:
+    """llm_models_in_use for the conditions a tuning grid's rounds score
+    (grid: the file's `tuning` section), e.g. llm.model for the standard
+    grid and none for a grid without rounds (config_alliance_lean_rq2.yaml),
+    for the tune job's pre-flight check."""
+    conditions = list(dict.fromkeys(c for r in grid.get("rounds") or [] for c in r.get("conditions") or []))
+    bases = {split_condition(c)[0] for c in conditions}
+    sub = {**cfg, "conditions": conditions,
+           "baselines": {**cfg["baselines"], "run_single_model_llm": "single_model_llm" in bases}}
+    return llm_models_in_use(sub)
+
+
 def llm_models_to_set_up(cfg: dict) -> list[tuple[str, str | None]]:
     """(model, alias) for every LLM a run needs, alias None where none is set,
     e.g. for jobs/prep2_download_models.sh."""

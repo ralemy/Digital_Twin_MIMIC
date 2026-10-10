@@ -48,7 +48,7 @@ module load $DT_MODULES          # environment.modules in your profile
 source "$DT_REPO/.venv/bin/activate"
 source jobs/ollama_lib.sh
 start_ollama "$CONFIG"         # OLLAMA_NUM_PARALLEL / FLASH_ATTENTION from the config
-require_models "$CONFIG" default     # tuning uses the primary model only
+require_models "$CONFIG" tune "${@:2}"   # the models the tuning grid's rounds use
 
 python src/tune.py --config-file "$CONFIG" "${@:2}"
 echo "== job ${SLURM_JOB_ID:-local} finished at $(date) =="

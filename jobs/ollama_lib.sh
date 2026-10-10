@@ -7,7 +7,8 @@
 #                                     # log: $DT_LOG_DIR/ollama-<job id>[-<tag>].log
 #   stop_ollama                       # stop it early (e.g. to restart with other settings)
 #   require_models "$CONFIG" all      # every model the config's conditions use
-#   require_models "$CONFIG" default  # only llm.model (e.g. for tuning)
+#   require_models "$CONFIG" default  # only llm.model
+#   require_models "$CONFIG" tune [--grid <file>]   # the models the tuning grid's rounds use
 #
 # start_ollama runs `ollama serve` on 127.0.0.1 at a port derived from the job
 # id — not the default 11434, which another user's server may hold on a shared
@@ -104,9 +105,25 @@ stop_ollama() {
 require_models() {
     local config=$1 which=$2 models pulled model
     models=$(python -c 'import sys; sys.path.insert(0, "src")
-from common import load_config, llm_models_in_use, ollama_model_name
+import yaml
+from common import load_config, llm_models_for_tuning, llm_models_in_use, ollama_model_name
 cfg = load_config(sys.argv[1])
-print("\n".join(llm_models_in_use(cfg) if sys.argv[2] == "all" else [ollama_model_name(cfg["llm"])]))' "$config" "$which") || return 1
+if sys.argv[2] == "all":
+    models = llm_models_in_use(cfg)
+elif sys.argv[2] == "tune":
+    # The grid tune.py will use: --grid among the job arguments, else the
+    # config'"'"'s tuning_grid, else the standard one.
+    grid, args = cfg.get("tuning_grid") or "config/tuning_grid.yaml", sys.argv[3:]
+    for i, a in enumerate(args):
+        if a == "--grid" and i + 1 < len(args):
+            grid = args[i + 1]
+        elif a.startswith("--grid="):
+            grid = a.split("=", 1)[1]
+    models = llm_models_for_tuning(cfg, yaml.safe_load(open(grid))["tuning"])
+else:
+    models = [ollama_model_name(cfg["llm"])]
+print("\n".join(models))' "$config" "$which" "${@:3}") || return 1
+    [ -n "$models" ] || { echo "== no LLM needed ($which) =="; return 0; }
     pulled=$(ollama list | awk 'NR > 1 {print $1}')
     for model in $models; do
         if ! grep -Fxq "$model" <<< "$pulled"; then
