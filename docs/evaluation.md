@@ -5,7 +5,8 @@ metric was chosen (and others weren't), what the first full lean run on
 Trillium taught us and what we changed because of it, how the
 hyperparameters are tuned (section 4), what the second run
 (`tri_lean_exp2`) showed and changed (section 5), and what the third
-(`tri_lean_exp3.4`) showed and changed (section 6). Every number comes from that run, or from re-analysing
+(`tri_lean_exp3.4`) showed and changed (section 6), and what the full-scope
+tuning on Fir (`fir_full_v2`) changed (section 7). Every number comes from that run, or from re-analysing
 its saved forecasts. The run's full write-up is in its results folder
 (`README.md` next to `mimic-iv-twin-work/`).
 
@@ -681,3 +682,42 @@ LLM. The 0.0018 gap to LSTM is several times that.
   the share its LLM critic fixes rather than clips, and sMAPE against no
   critic and against clipping; with 0.56 % of values affected, an sMAPE
   difference is unlikely to exceed the 0.0003–0.0005 re-run noise.
+
+---
+
+## 7. Full-scope tuning on Fir (`fir_full_v2`): what we learned and changed
+
+19 variables (14 of them labs), Med42-70B, stopped after tuning
+(`--until tune`). No fallbacks or filled variables in any trial; the longest
+request was ~6,000 of 8,192 tokens, none truncated.
+
+### 7.1 What we learned
+
+1. **One shared prompt setting can favour one RQ1 arm.** `trend_hint:
+   none` took the single model from 0.1233 to 0.1100 but the pipeline from
+   0.1121 to 0.1185 (about 4x the tuning noise), and won on the mean of the
+   two. At the lean scope the same choice cost the pipeline nothing
+   (0.1139 -> 0.1130).
+2. **The LSTM was handicapped at this scope.** 0.140 against GBM's 0.109
+   (lean: LSTM 0.110, the best baseline). It saw unmeasured hours as the
+   cohort mean, so a lab measured every 6-24 h read as the cohort mean most
+   hours; GBM gets the last measured value from its summary features.
+3. **Ollama can silently fall back from CUDA to Vulkan.** Its GPU discovery
+   gives each CUDA library 30 s to load; from `$HOME` on Fir that timed out,
+   and job 63850581 ran on Vulkan, 1.65x slower (1,420 vs ~850 s per batch).
+4. **Runtime as estimated.** ~850 s per batch of 32 for a Med42 condition
+   on CUDA, 3.7x the lean time per patient, as `run_all.sh` assumes.
+
+### 7.2 What we changed
+
+| Change | From finding |
+|---|---|
+| `forecasting_agent.per_condition` (`common.py`): prompt settings for one group, `single_model_llm` or `full_pipeline` (every `full_pipeline*` condition), over the shared ones. Rounds with `per_condition: true` in `tune.py` pick a winner per group; `trend_hint`, `cohort_anchor` and `prompt` are such rounds now. Checkpoints are keyed by each group's effective settings, so trials already run are reused | 1 |
+| `baselines.lstm_input: ffill_mask` (`baselines.py`): the last measured value carried forward plus a measured/not channel per variable; set in the lean, full and exp4 configs (the default, `zero_fill`, keeps older runs reproducible) | 2 |
+| `jobs/ollama_lib.sh`: the libraries are read into the page cache before `ollama serve`, `OLLAMA_VULKAN=false`, and a job stops unless Ollama found the GPU through CUDA (`DT_OLLAMA_REQUIRE_CUDA=0` skips the check) | 3 |
+
+Replaying `fir_full_v2`'s tuning with these rules: the single model keeps
+`trend_hint: none`, the pipeline the default (`slope`; `damped_note` gained
+0.00198, just under `min_improvement`). The re-run needs 6 new Med42
+pipeline evaluations and the LSTM trials.
+

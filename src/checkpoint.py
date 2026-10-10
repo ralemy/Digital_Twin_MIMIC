@@ -38,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-from common import LLM_CONDITIONS, cfg_for_llm_variant, get_logger, split_condition
+from common import LLM_CONDITIONS, cfg_for_llm_variant, forecasting_settings, get_logger, split_condition
 
 log = get_logger("checkpoint")
 
@@ -89,7 +89,7 @@ def model_fingerprint(cfg: dict, model: str, train_ids) -> dict:
           "train_ids": _ids_hash(train_ids), "data": DATA_VERSION}
     if model == "lstm":
         fp["lstm"] = {k: cfg["baselines"].get(k) for k in ("lstm_hidden_size", "lstm_epochs")}
-        fp["lstm"].update(_set_keys(cfg["baselines"], ("lstm_learning_rate", "lstm_seed")))
+        fp["lstm"].update(_set_keys(cfg["baselines"], ("lstm_learning_rate", "lstm_seed", "lstm_input")))
     if model == "gbm":
         extra = _set_keys(cfg["baselines"], ("gbm_max_depth", "gbm_max_iter", "gbm_learning_rate"))
         if extra:
@@ -124,8 +124,13 @@ def condition_fingerprint(cfg: dict, condition: str, train_ids, test_ids,
         fp["llm"] = {k: v for k, v in cfg_for_llm_variant(cfg, variant)["llm"].items() if k != "variants"}
         fp["similarity_agent"] = cfg["similarity_agent"]
         fp["critic_agent"] = cfg["critic_agent"]
-        if cfg.get("forecasting_agent"):
-            fp["forecasting_agent"] = cfg["forecasting_agent"]
+        # The settings this condition's prompt group runs with (shared +
+        # forecasting_agent.per_condition), so a per-condition change leaves
+        # the other group's checkpoints valid. Without per_condition this is
+        # the section as it is, as before.
+        fa = forecasting_settings(cfg, base)
+        if fa:
+            fp["forecasting_agent"] = fa
         # A variable the LLM leaves out now gets the naive forecast for that
         # variable only; before, the whole forecast fell back. Predictions
         # made under the old rule must not be reused.

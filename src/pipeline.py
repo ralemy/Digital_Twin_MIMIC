@@ -15,8 +15,9 @@ import numpy as np
 
 from baselines import PERSISTENCE_BASELINES, GBMBaseline, LSTMBaseline, naive_forecast, persistence_forecast
 from checkpoint import ConditionCheckpoint, RunCheckpoint, model_fingerprint
-from common import (LLM_CONDITIONS, cfg_for_llm_variant, critic_variant, get_logger, hard_ranges,
-                    llm_variants_in_use, split_condition, valid_ranges)
+from common import (LLM_CONDITIONS, cfg_for_llm_variant, cfg_for_prompt_group, critic_variant, get_logger,
+                    hard_ranges, llm_variants_in_use, prompt_group, split_condition, valid_ranges,
+                    validate_per_condition)
 from critic_agent import CriticAgent, critic_review_stage
 from forecasting_agent import ForecastingAgent, postprocess_forecast, postprocess_params
 from harmonization_agent import naive_fill, reference_stats
@@ -111,8 +112,7 @@ def run_condition(
     total_fallbacks = 0
     total_filled = np.zeros(y_true.shape[2], dtype=int)
     n_resumed = 0
-    agents = (fitted_models["variants"][split_condition(condition)[1]] if split_condition(condition)[1]
-              else fitted_models) if base in LLM_CONDITIONS else {}
+    agents = condition_agents(fitted_models, condition) if base in LLM_CONDITIONS else {}
     errors_before = {name: dict(agent.error_counts) for name, agent in agents.items()
                      if name in ("forecaster", "critic")}
 
@@ -184,6 +184,16 @@ def run_condition(
     }
 
 
+def condition_agents(fitted_models: dict, condition: str) -> dict:
+    """The forecaster and critic an LLM condition runs with: its variant's,
+    with the forecaster built for its prompt group
+    (forecasting_agent.per_condition)."""
+    base, variant = split_condition(condition)
+    agents = fitted_models["variants"][variant] if variant else fitted_models
+    name = "forecaster_pipeline" if prompt_group(base) == "full_pipeline" else "forecaster"
+    return {"forecaster": agents[name], "critic": agents["critic"]}
+
+
 def _load_models(agents: dict) -> None:
     """Load the forecaster's model. A critic on the same model needs nothing
     more; a critic on another model is loaded before each batch's critic
@@ -207,7 +217,7 @@ def _predict_batch(
     batch's pre-critic plausibility "violations", values the critic
     "clipped", LLM "fallbacks" and per-variable "filled" counts."""
     base, variant = split_condition(condition)
-    llm_agents = fitted_models["variants"][variant] if variant else fitted_models
+    llm_agents = condition_agents(fitted_models, condition) if base in LLM_CONDITIONS else {}
     variables = [v["name"] for v in cfg["variables"]]
     fallbacks_before = llm_agents["forecaster"].n_fallbacks if base in LLM_CONDITIONS else 0
     filled_before = dict(llm_agents["forecaster"].n_filled) if base in LLM_CONDITIONS else {}
@@ -407,6 +417,7 @@ def validate_conditions(cfg: dict) -> None:
     undefined / misplaced LLM variant."""
     known = ("naive", "gbm", "lstm") + PERSISTENCE_BASELINES + LLM_CONDITIONS
     critic_review_stage(cfg)                    # raises on an unknown critic_agent.stage
+    validate_per_condition(cfg)
     for condition in cfg["conditions"]:
         base, variant = split_condition(condition)
         if base not in known:
@@ -451,7 +462,8 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
         lstm_hidden = cfg["baselines"].get("lstm_hidden_size", 64)
         lstm_epochs = cfg["baselines"].get("lstm_epochs", 100)
         lstm_path = checkpoint.model_path("lstm", model_fingerprint(cfg, "lstm", train_tensors), "lstm.pt") if checkpoint else None
-        fitted["lstm"] = LSTMBaseline(variables, horizon_hours, hidden=lstm_hidden).fit(
+        fitted["lstm"] = LSTMBaseline(variables, horizon_hours, hidden=lstm_hidden,
+                                      input_mode=cfg["baselines"].get("lstm_input", "zero_fill")).fit(
             train_tensors, epochs=lstm_epochs, lr=cfg["baselines"].get("lstm_learning_rate", 1e-3),
             checkpoint_path=lstm_path,
             checkpoint_every=cfg["baselines"].get("lstm_checkpoint_every_epochs", 20),
@@ -485,7 +497,10 @@ def _build_llm_agents(cfg: dict, variant: str | None, reference: dict | None = N
     critic_llm = LocalLLM(cfg_for_llm_variant(cfg, cv)) if cv is not None else llm
     if cv is not None:
         log.info("LLM variant '%s': critic uses variant '%s' (model %s).", variant, cv, critic_llm.model)
+    # One forecaster per prompt group; they are the same unless
+    # forecasting_agent.per_condition sets something, and share the LLM.
     return {
-        "forecaster": ForecastingAgent(llm, vcfg, reference),
+        "forecaster": ForecastingAgent(llm, cfg_for_prompt_group(vcfg, "single_model_llm"), reference),
+        "forecaster_pipeline": ForecastingAgent(llm, cfg_for_prompt_group(vcfg, "full_pipeline"), reference),
         "critic": CriticAgent(critic_llm, vcfg, enabled=vcfg["critic_agent"]["enabled"]),
     }

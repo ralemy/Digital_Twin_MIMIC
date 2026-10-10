@@ -171,6 +171,50 @@ LLM_CONDITIONS = ("single_model_llm", "full_pipeline", "full_pipeline_no_critic"
                   "full_pipeline_clip_critic")
 
 
+# forecasting_agent.per_condition: prompt settings for one group of LLM
+# conditions over the shared ones, e.g. {full_pipeline: {trend_hint: damped}}.
+# Groups: single_model_llm, and full_pipeline for every full_pipeline*
+# condition (its ablations keep the pipeline's prompt). Set by tune.py's
+# per_condition rounds: on the full scope one shared trend_hint helped the
+# single model (0.123 -> 0.110) and hurt the pipeline (0.112 -> 0.118),
+# fir_full_v2. Post-processing keys stay shared (calibrate.py fits them per
+# condition anyway).
+PROMPT_GROUPS = ("single_model_llm", "full_pipeline")
+PER_CONDITION_KEYS = ("similarity_context", "strict_length", "recent_hours", "trend_hint", "cohort_anchor",
+                      "interval")
+
+
+def prompt_group(base: str) -> str:
+    """The forecasting_agent.per_condition group of an LLM condition's base."""
+    return "full_pipeline" if base.startswith("full_pipeline") else "single_model_llm"
+
+
+def forecasting_settings(cfg: dict, base: str) -> dict:
+    """The forecasting_agent settings an LLM condition (its base) runs with:
+    the shared ones with its group's per_condition entries on top. Without
+    per_condition, a copy of the section as it is."""
+    fa = dict(cfg.get("forecasting_agent") or {})
+    per = fa.pop("per_condition", None) or {}
+    fa.update(per.get(prompt_group(base)) or {})
+    return fa
+
+
+def cfg_for_prompt_group(cfg: dict, base: str) -> dict:
+    """cfg with forecasting_agent replaced by forecasting_settings(cfg, base)."""
+    return {**cfg, "forecasting_agent": forecasting_settings(cfg, base)}
+
+
+def validate_per_condition(cfg: dict) -> None:
+    per = (cfg.get("forecasting_agent") or {}).get("per_condition") or {}
+    for group, settings in per.items():
+        if group not in PROMPT_GROUPS:
+            raise ValueError(f"forecasting_agent.per_condition: unknown group '{group}' (groups: {PROMPT_GROUPS})")
+        bad = [k for k in settings or {} if k not in PER_CONDITION_KEYS]
+        if bad:
+            raise ValueError(f"forecasting_agent.per_condition.{group}: {bad} can't be set per condition "
+                             f"(allowed: {PER_CONDITION_KEYS})")
+
+
 def split_condition(condition: str) -> tuple[str, str | None]:
     """A condition may name an alternative LLM after '@', e.g.
     'full_pipeline@medgemma' -> ('full_pipeline', 'medgemma');

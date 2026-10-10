@@ -289,6 +289,12 @@ baselines:
   lstm_hidden_size: 128
   lstm_epochs: 200
   lstm_checkpoint_every_epochs: 20   # LSTM training checkpoint interval (resume after a stop)
+  # What the LSTM sees for unmeasured hours (baselines.LSTMBaseline):
+  # ffill_mask = last measured value carried forward + a measured/not
+  # channel per variable, as GBM gets from its last-value features;
+  # zero_fill (the default, all runs up to tri_lean_exp4) = the cohort mean.
+  # fir_full_v2 tuning with zero_fill: LSTM 0.140 vs GBM 0.109 (14 labs).
+  lstm_input: ffill_mask
 
 conditions:
   - naive

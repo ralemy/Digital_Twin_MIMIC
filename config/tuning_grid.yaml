@@ -60,10 +60,15 @@ tuning:
         k50: {similarity_agent.k_neighbors: 50}
 
     # --- trends and anchors (affect every LLM condition, so both are scored) ---
+    # per_condition: each condition gets its own winner, for its prompt group
+    # (single_model_llm, or every full_pipeline* condition). fir_full_v2,
+    # scored jointly: no_slope helped the single model (0.123 -> 0.110) and
+    # hurt the pipeline (0.112 -> 0.118), and won for both.
     # On Trillium the single-model forecasts continued trend_slope ~1:1 for
     # 24 h, while the patients reverted toward their mean.
     - name: trend_hint
       conditions: [single_model_llm, full_pipeline]
+      per_condition: true
       trials:
         no_slope: {forecasting_agent.trend_hint: none}
         damped_note: {forecasting_agent.trend_hint: damped}
@@ -74,12 +79,14 @@ tuning:
     # here: 0.5 / 0.25 / 0 scored within 0.002; the configs start from 0.25.
     - name: cohort_anchor             # the training cohort's median [IQR] in the prompt
       conditions: [single_model_llm, full_pipeline]
+      per_condition: true
       trials:
         anchor: {forecasting_agent.cohort_anchor: true}
 
     # --- prompt and decoding (affect every LLM condition, so both are scored) --
     - name: prompt
       conditions: [single_model_llm, full_pipeline]
+      per_condition: true
       trials:
         strict_length: {forecasting_agent.strict_length: true}
         recent6h: {forecasting_agent.recent_hours: 6}

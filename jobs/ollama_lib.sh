@@ -44,15 +44,51 @@ print(s["OLLAMA_NUM_PARALLEL"], s["OLLAMA_FLASH_ATTENTION"])' "$config") || retu
     if [ ! -f "$HOME/.ollama/id_ed25519" ] && [ ! -w "$HOME" ]; then
         serve_home=${SLURM_TMPDIR:-/tmp}
     fi
+    # Ollama gives each CUDA library 30 s to load during GPU discovery. Read
+    # from a networked filesystem that can time out, and Ollama then quietly
+    # runs on Vulkan (Fir job 63850581: 1.65x slower) or the CPU. So: read
+    # the libraries once first (they then load from the page cache), turn
+    # Vulkan off, and check below that the GPU was found through CUDA.
+    local libdir
+    libdir="$(dirname "$(dirname "$(command -v ollama)")")/lib/ollama"
+    if [ -d "$libdir" ]; then
+        echo "== reading Ollama's libraries ($libdir) into the page cache =="
+        find "$libdir" -maxdepth 2 -name '*.so*' -type f -exec cat {} + > /dev/null 2>&1 || true
+    fi
+    export OLLAMA_VULKAN=false
     HOME=$serve_home ollama serve > "$log_file" 2>&1 &
     OLLAMA_PID=$!
     trap stop_ollama EXIT
     echo "== waiting for ollama on ${OLLAMA_HOST} =="
-    if ! curl -sf --retry 60 --retry-delay 1 --retry-connrefused "http://${OLLAMA_HOST}/api/tags" > /dev/null; then
+    if ! curl -sf --retry 180 --retry-delay 1 --retry-connrefused "http://${OLLAMA_HOST}/api/tags" > /dev/null; then
         echo "== ollama did not become ready — see $log_file ==" >&2
         return 1
     fi
+    check_ollama_gpu "$log_file" || return 1
     echo "== ollama ready =="
+}
+
+# The backend Ollama found the GPU with ("inference compute" in its log);
+# fails unless it is CUDA, so the job stops (and run_all resubmits it)
+# instead of running hours on Vulkan or the CPU. DT_OLLAMA_REQUIRE_CUDA=0
+# skips the check, e.g. on a machine without an NVIDIA GPU.
+check_ollama_gpu() {
+    local log_file=$1 line fd tail_pid
+    [ "${DT_OLLAMA_REQUIRE_CUDA:-1}" = 0 ] && return 0
+    # Waits for the line as it is written (no polling), at most 120 s; the
+    # tail is stopped as soon as grep has it.
+    exec {fd}< <(timeout ${DT_OLLAMA_GPU_WAIT_S:-120} tail -n +1 -F "$log_file" 2>/dev/null)
+    tail_pid=$!
+    line=$(grep -m1 'msg="inference compute"' <&"$fd") || true      # no match: reported below
+    exec {fd}<&-
+    kill "$tail_pid" 2>/dev/null || true
+    if [[ "$line" == *"library=CUDA"* ]]; then
+        echo "== ollama found the GPU through CUDA =="
+        return 0
+    fi
+    echo "== ollama did not find the GPU through CUDA (${line:-no 'inference compute' line in ${DT_OLLAMA_GPU_WAIT_S:-120} s}) — stopping;" \
+         "see $log_file (GPU discovery timeouts?) ==" >&2
+    return 1
 }
 
 stop_ollama() {

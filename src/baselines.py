@@ -189,9 +189,12 @@ class GBMBaseline:
 if _TORCH_AVAILABLE:
 
     class _Seq2SeqLSTM(nn.Module): # type: ignore
-        def __init__(self, n_vars: int, hidden: int = 64, horizon_hours: int = 24):
+        def __init__(self, n_vars: int, hidden: int = 64, horizon_hours: int = 24, n_inputs: int | None = None):
+            """n_inputs: the encoder's input features per hour (default
+            n_vars; 2 * n_vars with lstm_input ffill_mask, whose first n_vars
+            are the values)."""
             super().__init__()
-            self.encoder = nn.LSTM(input_size=n_vars, hidden_size=hidden, batch_first=True)
+            self.encoder = nn.LSTM(input_size=n_inputs or n_vars, hidden_size=hidden, batch_first=True)
             self.decoder = nn.LSTM(input_size=n_vars, hidden_size=hidden, batch_first=True)
             self.head = nn.Linear(hidden, n_vars)
             self.horizon_hours = horizon_hours
@@ -200,7 +203,7 @@ if _TORCH_AVAILABLE:
         def forward(self, obs: torch.Tensor) -> torch.Tensor: # type: ignore
             _, (h, c) = self.encoder(obs)
             # teacher-forcing-free autoregressive decode, seeded with the last observed step
-            dec_input = obs[:, -1:, :]
+            dec_input = obs[:, -1:, :self.n_vars]
             outputs = []
             for _ in range(self.horizon_hours):
                 out, (h, c) = self.decoder(dec_input, (h, c))
@@ -210,18 +213,37 @@ if _TORCH_AVAILABLE:
             return torch.cat(outputs, dim=1)  # (batch, horizon_hours, n_vars)
 
 
+LSTM_INPUTS = ("zero_fill", "ffill_mask")
+
+
 class LSTMBaseline:
-    def __init__(self, variables: list[str], horizon_hours: int, device: str | None = None, hidden: int = 64):
+    """baselines.lstm_input, what the encoder sees for each hour:
+      zero_fill  (default): the normalised values, unmeasured hours as 0 (the
+                 cohort mean). A lab measured every 6-24 h then reads as the
+                 cohort mean most hours: fir_full_v2 tuning, 14 labs among 19
+                 variables, LSTM 0.140 vs GBM 0.109 (lean, 1 lab: LSTM best).
+      ffill_mask: each variable's last measured value carried forward (0
+                 before its first measurement), plus a 0/1 channel per
+                 variable saying whether it was measured that hour — what GBM
+                 gets from its last-value features."""
+
+    def __init__(self, variables: list[str], horizon_hours: int, device: str | None = None, hidden: int = 64,
+                 input_mode: str = "zero_fill"):
         if not _TORCH_AVAILABLE:
             raise ImportError(
                 "LSTMBaseline requires PyTorch. Install it with `pip install torch` "
                 "(a CUDA build matching your GPU), or set baselines.run_lstm: false "
                 "and drop 'lstm' from `conditions` in the config to skip this baseline."
             )
+        if input_mode not in LSTM_INPUTS:
+            raise ValueError(f"baselines.lstm_input must be one of {LSTM_INPUTS}, not {input_mode!r}")
         self.variables = variables
         self.horizon_hours = horizon_hours
+        self.input_mode = input_mode
+        self.n_inputs = len(variables) * (2 if input_mode == "ffill_mask" else 1)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = _Seq2SeqLSTM(len(variables), hidden=hidden, horizon_hours=horizon_hours).to(self.device)
+        self.model = _Seq2SeqLSTM(len(variables), hidden=hidden, horizon_hours=horizon_hours,
+                                  n_inputs=self.n_inputs).to(self.device)
         self.residual_std = np.ones(len(variables))
         self._norm_mean = None
         self._norm_std = None
@@ -229,6 +251,18 @@ class LSTMBaseline:
     def _to_tensor(self, arr: np.ndarray) -> torch.Tensor: # type: ignore
         filled = np.nan_to_num(arr, nan=0.0)
         return torch.tensor(filled, dtype=torch.float32)
+
+    def _inputs(self, obs_stack: np.ndarray) -> np.ndarray:
+        """Encoder inputs (patients, hours, n_inputs) for raw observations
+        (patients, hours, variables), per input_mode."""
+        x = (obs_stack - self._norm_mean) / self._norm_std
+        if self.input_mode == "zero_fill":
+            return np.nan_to_num(x, nan=0.0)
+        measured = ~np.isnan(x)
+        hours = np.arange(x.shape[1])[None, :, None]
+        last = np.maximum.accumulate(np.where(measured, hours, 0), axis=1)   # hour of the last measurement
+        filled = np.take_along_axis(x, last, axis=1)                        # NaN before the first one
+        return np.concatenate([np.nan_to_num(filled, nan=0.0), measured.astype(float)], axis=2)
 
     def fit(self, train_tensors: dict[int, dict], epochs: int = 100, lr: float = 1e-3,
             checkpoint_path: Path | None = None, checkpoint_every: int = 20,
@@ -245,11 +279,9 @@ class LSTMBaseline:
         self._norm_std = np.nanstd(obs_stack, axis=(0, 1))
         self._norm_std[self._norm_std == 0] = 1.0
 
-        obs_norm = (np.nan_to_num(obs_stack, nan=np.nan) - self._norm_mean) / self._norm_std
-        obs_norm = np.nan_to_num(obs_norm, nan=0.0)
         hor_norm = (hor_stack - self._norm_mean) / self._norm_std
 
-        X = torch.tensor(obs_norm, dtype=torch.float32).to(self.device)
+        X = torch.tensor(self._inputs(obs_stack), dtype=torch.float32).to(self.device)
         Y = torch.tensor(np.nan_to_num(hor_norm, nan=0.0), dtype=torch.float32).to(self.device)
         Y_mask = torch.tensor(~np.isnan(hor_norm), dtype=torch.float32).to(self.device)
 
@@ -258,7 +290,7 @@ class LSTMBaseline:
             # so differences between LSTM settings aren't initialisation noise.
             torch.manual_seed(seed)
             self.model = _Seq2SeqLSTM(len(self.variables), hidden=self.model.encoder.hidden_size,
-                                      horizon_hours=self.horizon_hours).to(self.device)
+                                      horizon_hours=self.horizon_hours, n_inputs=self.n_inputs).to(self.device)
         opt = torch.optim.Adam(self.model.parameters(), lr=lr)
         start_epoch = 0
         if checkpoint_path is not None and checkpoint_path.exists():
@@ -292,9 +324,7 @@ class LSTMBaseline:
         return self
 
     def predict(self, obs: np.ndarray) -> dict:
-        obs_norm = (np.nan_to_num(obs, nan=np.nan) - self._norm_mean) / self._norm_std
-        obs_norm = np.nan_to_num(obs_norm, nan=0.0)
-        x = torch.tensor(obs_norm[None, :, :], dtype=torch.float32).to(self.device)
+        x = torch.tensor(self._inputs(obs[None, :, :]), dtype=torch.float32).to(self.device)
         with torch.no_grad():
             pred_norm = self.model(x).cpu().numpy()[0]
         pred = pred_norm * self._norm_std + self._norm_mean
@@ -316,8 +346,7 @@ class LSTMBaseline:
         headroom."""
         n = obs_stack.shape[0]
         forecasts = np.zeros((n, self.horizon_hours, len(self.variables)))
-        obs_norm = (np.nan_to_num(obs_stack, nan=np.nan) - self._norm_mean) / self._norm_std
-        obs_norm = np.nan_to_num(obs_norm, nan=0.0)
+        obs_norm = self._inputs(obs_stack)
         with torch.no_grad():
             for start in range(0, n, batch_size):
                 end = min(start + batch_size, n)

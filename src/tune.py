@@ -15,6 +15,10 @@ lowers the objective — mean per-patient sMAPE over the round's conditions —
 by at least tuning.min_improvement, with every condition's LLM fallback rate
 at or below tuning.max_fallback_rate (so a setting can't win by producing
 naive fallbacks). The winner becomes the incumbent for the next round.
+A round with `per_condition: true` (prompt settings) instead picks a winner
+for each of its conditions, scored alone, and sets it for that condition's
+prompt group only (forecasting_agent.per_condition, see common.py), so the
+single model and the pipeline can each keep the prompt that suits them.
 
 Resuming: every condition × setting is checkpointed per batch of patients
 under <checkpoint_dir>/tune/ (see src/checkpoint.py), and its metrics are
@@ -44,7 +48,8 @@ import yaml
 
 import tracking
 from checkpoint import RunCheckpoint, atomic_path, checkpoint_root, condition_fingerprint, model_fingerprint
-from common import LLM_CONDITIONS, ensure_work_dirs, get_logger, load_config, parse_step_args, split_condition
+from common import (LLM_CONDITIONS, PER_CONDITION_KEYS, ensure_work_dirs, get_logger, load_config, parse_step_args,
+                    prompt_group, split_condition)
 from evaluate_results import per_patient_smape
 from harmonization_agent import build_tensors
 from metrics import interval_coverage, mean_interval_width, plausibility_violation_rate
@@ -195,6 +200,31 @@ def objective(metrics: dict[str, dict], max_fallback_rate: float) -> tuple[float
     return value, eligible
 
 
+def group_overrides(overrides: dict, group: str) -> dict:
+    """A per_condition round's trial overrides (forecasting_agent prompt
+    settings) for one prompt group only: forecasting_agent.per_condition.<group>.<key>."""
+    out = {}
+    for dotted, value in overrides.items():
+        section, _, key = dotted.partition(".")
+        if section != "forecasting_agent" or key not in PER_CONDITION_KEYS:
+            raise ValueError(f"per_condition round: '{dotted}' is not a forecasting_agent prompt setting "
+                             f"({', '.join(PER_CONDITION_KEYS)})")
+        out[f"forecasting_agent.per_condition.{group}.{key}"] = value
+    return out
+
+
+def pick_winner(scored: dict, min_improvement: float) -> str:
+    """The acceptance rule: the best eligible trial replaces the incumbent
+    if it gains at least min_improvement (or the incumbent is ineligible)."""
+    inc_value, inc_eligible = scored["incumbent"][:2]
+    eligible = {t: s for t, s in scored.items() if s[1]}
+    if eligible:
+        best = min(eligible, key=lambda t: eligible[t][0])
+        if best != "incumbent" and (not inc_eligible or inc_value - eligible[best][0] >= min_improvement):
+            return best
+    return "incumbent"
+
+
 def tuned_config_path(config_path: str) -> Path:
     p = Path(config_path)
     return p.with_name(f"{p.stem}_tuned{p.suffix}")
@@ -252,6 +282,48 @@ def main(config_path: str, grid_path: str | None = None, full_refresh: bool = Fa
     for rnd in grid["rounds"]:
         name, conditions = rnd["name"], rnd["conditions"]
         candidates = {"incumbent": {}} | (rnd.get("trials") or {})
+        if rnd.get("per_condition"):
+            # Each condition's prompt group gets its own winner: the trials
+            # set forecasting_agent.per_condition.<group>.* and each
+            # condition is scored alone. Trials already run with the same
+            # effective settings are reused from the cache.
+            groups = {c: prompt_group(split_condition(c)[0]) for c in conditions}
+            if any(split_condition(c)[0] not in LLM_CONDITIONS for c in conditions) \
+                    or len(set(groups.values())) != len(conditions):
+                raise ValueError(f"Round '{name}': per_condition needs LLM conditions from different "
+                                 f"prompt groups, got {conditions}")
+            log.info("=== Round '%s' (per condition) on %s: %d settings ===", name, conditions, len(candidates))
+            winners, entry_candidates, entry_objective, entry_before = {}, {}, {}, {}
+            for condition in conditions:
+                scored = {}
+                for trial, trial_over in candidates.items():
+                    overrides = incumbent | group_overrides(trial_over or {}, groups[condition])
+                    metrics = runner.run(overrides, [condition])
+                    value, eligible = objective(metrics, grid["max_fallback_rate"])
+                    scored[trial] = (value, eligible, trial_over or {})
+                    log.info("Round '%s' %s trial '%s': objective %.4f%s %s", name, condition, trial, value,
+                             "" if eligible else " (INELIGIBLE: fallback rate too high)", trial_over or "")
+                    n_trials += 1
+                    tracking.log_metrics({"tune/trials_done": n_trials,
+                                          f"tune/{name}/{condition}/{trial}/objective": value})
+                    trial_rows.append({"round": name, "trial": trial, "objective": value, "eligible": eligible,
+                                       "overrides": json.dumps(trial_over or {}), **metrics[condition]})
+                    pd.DataFrame(trial_rows).to_csv(out_dir / "trials.csv", index=False)
+                winners[condition] = pick_winner(scored, grid["min_improvement"])
+                entry_candidates[condition] = {t: {"objective": s[0], "eligible": s[1]} for t, s in scored.items()}
+                entry_objective[condition] = scored[winners[condition]][0]
+                entry_before[condition] = scored["incumbent"][0]
+                log.info("Round '%s' winner for %s: %s (objective %.4f; before %.4f)", name, condition,
+                         winners[condition], entry_objective[condition], entry_before[condition])
+                tracking.log_metrics({f"tune/{name}/{condition}/winner_objective": entry_objective[condition]})
+            for condition, trial in winners.items():
+                incumbent = incumbent | group_overrides(candidates[trial] or {}, groups[condition])
+            round_log.append({"round": name, "conditions": conditions, "per_condition": True,
+                              "winner": winners, "objective": entry_objective, "incumbent_before": entry_before,
+                              "candidates": entry_candidates, "settings_after": incumbent})
+            (out_dir / "rounds.json").write_text(json.dumps(round_log, indent=2))
+            tracking.log_metrics({"tune/rounds_done": len(round_log)})
+            continue
         log.info("=== Round '%s' on %s: %d settings ===", name, conditions, len(candidates))
         scored = {}
         for trial, trial_over in candidates.items():
@@ -271,13 +343,8 @@ def main(config_path: str, grid_path: str | None = None, full_refresh: bool = Fa
                                    "overrides": json.dumps(trial_over or {}), **m})
             pd.DataFrame(trial_rows).to_csv(out_dir / "trials.csv", index=False)
 
-        inc_value, inc_eligible, _ = scored["incumbent"]
-        eligible = {t: s for t, s in scored.items() if s[1]}
-        winner = "incumbent"
-        if eligible:
-            best = min(eligible, key=lambda t: eligible[t][0])
-            if best != "incumbent" and (not inc_eligible or inc_value - eligible[best][0] >= grid["min_improvement"]):
-                winner = best
+        inc_value = scored["incumbent"][0]
+        winner = pick_winner(scored, grid["min_improvement"])
         incumbent = scored[winner][2]
         round_log.append({"round": name, "conditions": conditions, "winner": winner,
                           "objective": scored[winner][0], "incumbent_before": inc_value,
