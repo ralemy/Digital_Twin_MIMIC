@@ -57,6 +57,11 @@ print(s["OLLAMA_NUM_PARALLEL"], s["OLLAMA_FLASH_ATTENTION"])' "$config") || retu
         find "$libdir" -maxdepth 2 -name '*.so*' -type f -exec cat {} + > /dev/null 2>&1 || true
     fi
     export OLLAMA_VULKAN=false
+    # How long Ollama waits for a model to load (its default, 5 min, was too
+    # short for Llama-3-70B from Rorqual's /scratch, job 22936019); a bit
+    # under src/llm_client.py's LOAD_TIMEOUT_S (900 s). Profile:
+    # environment.ollama_load_timeout, or DT_OLLAMA_LOAD_TIMEOUT.
+    export OLLAMA_LOAD_TIMEOUT="${DT_OLLAMA_LOAD_TIMEOUT:-14m}"
     HOME=$serve_home ollama serve > "$log_file" 2>&1 &
     OLLAMA_PID=$!
     trap stop_ollama EXIT

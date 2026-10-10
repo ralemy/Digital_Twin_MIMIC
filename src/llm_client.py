@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -33,7 +34,34 @@ SERVER_ERROR_RETRIES = 2
 # the model loaded (calibrate job 1032638) and were scored as fallbacks. A
 # constant, not an llm.* key, because the llm section is part of every LLM
 # condition's checkpoint fingerprint.
-LOAD_TIMEOUT_S = 900
+LOAD_TIMEOUT_S = 900   # jobs/ollama_lib.sh gives Ollama's own limit (OLLAMA_LOAD_TIMEOUT) a bit less
+
+
+def model_blobs(model: str, models_dir: str | None = None) -> list[Path]:
+    """The weight files ("model" layers) of an Ollama model in
+    $OLLAMA_MODELS, from its manifest: e.g. llama3:70b-instruct-q4_K_M ->
+    manifests/registry.ollama.ai/library/llama3/70b-instruct-q4_K_M,
+    hf.co/<user>/<repo>:<tag> -> manifests/hf.co/<user>/<repo>/<tag>."""
+    root = Path(models_dir or os.environ.get("OLLAMA_MODELS", ""))
+    name, _, tag = model.partition(":")
+    parts = name.split("/")
+    if len(parts) == 1:
+        parts = ["registry.ollama.ai", "library"] + parts
+    elif len(parts) == 2:
+        parts = ["registry.ollama.ai"] + parts
+    layers = json.loads((root / "manifests" / Path(*parts) / (tag or "latest")).read_text())["layers"]
+    return [root / "blobs" / layer["digest"].replace(":", "-")
+            for layer in layers if "model" in layer.get("mediaType", "")]
+
+
+def preread(paths: list[Path], chunk: int = 64 << 20) -> int:
+    """Read files start to end (into the page cache); returns bytes read."""
+    total = 0
+    for path in paths:
+        with open(path, "rb", buffering=0) as f:
+            while block := f.read(chunk):
+                total += len(block)
+    return total
 
 
 class LocalLLM:
@@ -107,6 +135,7 @@ class LocalLLM:
         context length, and at 8 request slots Baichuan-M2's filled the
         job's 188 GiB of host memory (OOM-killed, job 1033643); a different
         num_ctx would also make the first real request reload the model."""
+        self._preread()
         t0 = time.time()
         resp = self._session.post(f"{self.host}/api/generate", timeout=LOAD_TIMEOUT_S,
                                   json={"model": self.model, "options": {"num_ctx": self.num_ctx}})
@@ -114,6 +143,26 @@ class LocalLLM:
             raise requests.exceptions.HTTPError(
                 f"{resp.status_code} loading {self.model} in Ollama: {resp.text[:300]}", response=resp)
         log.info("Model %s loaded in %.0fs.", self.model, time.time() - t0)
+
+    def _preread(self) -> None:
+        """Read the model's weight file sequentially before Ollama loads it,
+        unless it's loaded already. Ollama memory-maps the file, and on a
+        networked filesystem the scattered reads of a model the node hasn't
+        read yet can outlast its load limit: Rorqual, Llama-3-70B from
+        /scratch, 5 min and not loaded (job 22936019). One sequential read is
+        far faster, and the load then comes from the page cache.
+        DT_OLLAMA_PREREAD=0 turns it off; any failure here only logs."""
+        if os.environ.get("DT_OLLAMA_PREREAD", "1") == "0":
+            return
+        try:
+            running = self._session.get(f"{self.host}/api/ps", timeout=30).json().get("models") or []
+            if any(self.model in (m.get("name"), m.get("model")) for m in running):
+                return
+            t0 = time.time()
+            n = preread(model_blobs(self.model))
+            log.info("Read %s's weights (%.1f GB) in %.0fs before loading it.", self.model, n / 1e9, time.time() - t0)
+        except Exception as e:  # noqa: BLE001 - an optimisation; the load itself still runs
+            log.warning("Could not pre-read %s's weights (%s); loading it directly.", self.model, e)
 
     def generate(self, prompt: str, system: str | None = None, json_mode: bool = False,
                  schema: dict | None = None) -> str:

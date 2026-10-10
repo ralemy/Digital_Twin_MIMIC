@@ -214,6 +214,7 @@ values.update({
     "DT_GPU_JOB_CPUS": setting("DT_GPU_JOB_CPUS", "slurm", "gpu_job_cpus"),
     "DT_SBATCH_EXTRA": setting("DT_SBATCH_EXTRA", "slurm", "extra_sbatch_options"),
     "DT_MAX_JOB_HOURS": setting("DT_MAX_JOB_HOURS", "slurm", "max_job_hours", "8"),
+    "DT_OLLAMA_LOAD_TIMEOUT": setting("DT_OLLAMA_LOAD_TIMEOUT", "environment", "ollama_load_timeout", "14m"),
     "DT_KILL_ON_INVALID_DEP": os.environ.get("DT_KILL_ON_INVALID_DEP", "").strip()
                               or flag("slurm", "kill_on_invalid_dep", "0" if trillium else "1"),
 })
