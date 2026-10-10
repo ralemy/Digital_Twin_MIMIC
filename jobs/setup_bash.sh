@@ -182,6 +182,8 @@ on_cluster = cluster != "local"
 # Trillium: no internet on compute nodes, $HOME and /project read-only there,
 # and (from the GPU login node) every job takes a GPU, with no --mem.
 trillium = cluster == "trillium"
+# Compute nodes without internet (the clusters' Alliance wiki pages).
+no_worker_internet = cluster in ("trillium", "rorqual")
 values = {
     "DT_ACCOUNT": get("slurm", "account"),
     "DT_MIMIC_DIR": location("mimic_dir"),
@@ -191,7 +193,7 @@ values = {
     "DT_OLLAMA_VERSION": get("environment", "ollama_version") or "0.34.4",
     "DT_MODULES": get("environment", "modules") or ("StdEnv/2023 python/3.11" if on_cluster else ""),
     "DT_WANDB_DISABLED": flag("environment", "disable_wandb", "1"),
-    "DT_WORKER_INTERNET": flag("environment", "workers_have_internet", "0" if trillium else "1"),
+    "DT_WORKER_INTERNET": flag("environment", "workers_have_internet", "0" if no_worker_internet else "1"),
     "DT_WORKER_WRITES_REPO": flag("environment", "workers_can_write_repo", "0" if trillium else "1"),
     "DT_GPU_JOBS_ONLY": flag("slurm", "gpu_jobs_only", "1" if trillium else "0"),
     "DT_LOGS_ROOT": location("logs_dir", "$DT_REPO/logs"),

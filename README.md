@@ -365,8 +365,9 @@ never download: they stop with the commands to run if a model is missing.
 
 `prep1` and `prep2` download from the internet. Where compute nodes have
 access, they run as Slurm jobs. On clusters whose compute nodes have none
-(Rorqual, Trillium), set `environment.workers_have_internet: false` in your
-profile (the default on Trillium) and redo the setup. Then:
+(Rorqual, Trillium), `environment.workers_have_internet` is `false` (the
+default on both; set it in your profile on any other such cluster and redo
+the setup). Then:
 
 - **Run the downloads on a login node, with `bash` instead of `sbatch`.** They
   take hours, so start them inside `tmux` (or `screen`) so a dropped

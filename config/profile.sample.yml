@@ -98,7 +98,8 @@ environment:
 
   # Whether this cluster's compute (worker) nodes can reach the internet:
   # false on Rorqual and Trillium (see the cluster's Alliance
-  # wiki page). Leave empty for the default: false on Trillium, else true.
+  # wiki page). Leave empty for the default: false on Rorqual and Trillium,
+  # else true.
   # With false, the downloads (MIMIC-IV with prep1, the Ollama models with
   # prep2) run on a login node instead of as Slurm jobs — jobs/run_all.sh does
   # that by itself; run prep1/prep2 by hand with bash (README, section 4).
