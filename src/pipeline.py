@@ -17,7 +17,7 @@ from baselines import PERSISTENCE_BASELINES, GBMBaseline, LSTMBaseline, naive_fo
 from checkpoint import ConditionCheckpoint, RunCheckpoint, model_fingerprint
 from common import (LLM_CONDITIONS, cfg_for_llm_variant, critic_variant, get_logger, hard_ranges,
                     llm_variants_in_use, split_condition, valid_ranges)
-from critic_agent import CriticAgent
+from critic_agent import CriticAgent, critic_review_stage
 from forecasting_agent import ForecastingAgent, postprocess_forecast, postprocess_params
 from harmonization_agent import naive_fill, reference_stats
 from llm_client import LocalLLM
@@ -306,14 +306,26 @@ def _predict_batch(
         similarity: SimilarityAgent = fitted_models["similarity"]   # model-independent, shared by all variants
         use_similarity = base != "full_pipeline_no_similarity"
         use_critic = base != "full_pipeline_no_critic"
+        critic_stage = critic_review_stage(cfg)
 
         def _forecast_worker(sid):
             sim_ctx = similarity.query(test_tensors[sid]["obs"]) if use_similarity else None
             return sid, forecaster.forecast(test_tensors[sid]["obs"], similarity_context=sim_ctx)
 
         def _critic_worker(sid_raw):
-            # Post-processing first, so the critic reviews the final forecast.
             sid, raw = sid_raw
+            if use_critic and critic_stage == "raw":
+                # The critic reviews the LLM's own output, then it is
+                # post-processed. y_raw is the reviewed forecast, the one
+                # post-processing starts from (calibrate.fit_postprocess).
+                reviewed = critic.review(raw)
+                raw = {**raw, "forecast": reviewed["forecast"]}
+                final_forecast = postprocess_forecast(raw, test_tensors[sid]["obs"], variables, params, hard)
+                fcast, interval = _llm_forecast_to_arrays(final_forecast, variables, horizon_hours)
+                return (fcast, interval, reviewed["violations_before_correction"], reviewed["clipped_values"],
+                        _llm_forecast_to_arrays(raw, variables, horizon_hours)[0])
+            # Default (stage final): post-processing first, so the critic
+            # reviews the final forecast.
             post = postprocess_forecast(raw, test_tensors[sid]["obs"], variables, params, hard)
             if use_critic:
                 reviewed = critic.review(post)
@@ -394,6 +406,7 @@ def validate_conditions(cfg: dict) -> None:
     """Fail at startup, not hours into a run, on a misspelled condition or an
     undefined / misplaced LLM variant."""
     known = ("naive", "gbm", "lstm") + PERSISTENCE_BASELINES + LLM_CONDITIONS
+    critic_review_stage(cfg)                    # raises on an unknown critic_agent.stage
     for condition in cfg["conditions"]:
         base, variant = split_condition(condition)
         if base not in known:

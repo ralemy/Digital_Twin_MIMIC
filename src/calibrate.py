@@ -36,6 +36,7 @@ import numpy as np
 
 import tracking
 from checkpoint import RunCheckpoint, atomic_path, checkpoint_root, condition_fingerprint
+from critic_agent import critic_review_stage
 from common import LLM_CONDITIONS, ensure_work_dirs, get_logger, load_config, parse_step_args, split_condition
 from evaluate_results import per_patient_smape
 from harmonization_agent import build_tensors
@@ -44,7 +45,7 @@ from common import hard_ranges
 from forecasting_agent import postprocess_arrays, postprocess_params
 from pipeline import ensemble_result, ensembles, fit_models, run_condition, validate_conditions
 from run_experiment import load_cohort_and_panel, split_tensors
-from tune import DEFAULT_GRID, _digest, load_grid, validation_subsets
+from tune import DEFAULT_GRID, _digest, config_grid, load_grid, validation_subsets
 
 log = get_logger("calibrate")
 
@@ -98,12 +99,14 @@ def fit_postprocess(result: dict, obs: np.ndarray, cfg: dict, base: str) -> tupl
     that minimise mean per-patient sMAPE on these patients, chosen over
     DAMPING_GRID x ANCHOR_GRID from the forecasts before post-processing
     (result["y_raw"]), so no LLM call is repeated. A condition with a critic
-    is scored after clipping to the plausible range, its critic's last step.
-    Returns (params, {"smape_config": ..., "smape_fitted": ...})."""
+    is scored after clipping to the plausible range, its critic's last step;
+    with critic_agent.stage: raw, y_raw is already the critic's output, so
+    nothing is clipped. Returns (params, {"smape_config": ..., "smape_fitted": ...})."""
     variables = [v["name"] for v in cfg["variables"]]
     hard = np.array([hard_ranges(cfg)[var] for var in variables])
     plausible = np.array([v["plausible_range"] for v in cfg["variables"]], dtype=float)
-    critic = base in ("full_pipeline", "full_pipeline_no_similarity", "full_pipeline_clip_critic")
+    critic = (base in ("full_pipeline", "full_pipeline_no_similarity", "full_pipeline_clip_critic")
+              and critic_review_stage(cfg) == "final")
     window = postprocess_params(cfg)["level_window_hours"]
 
     def forecast(params):
@@ -121,11 +124,11 @@ def fit_postprocess(result: dict, obs: np.ndarray, cfg: dict, base: str) -> tupl
     return best, {"smape_config": configured, "smape_fitted": best_score, "y_pred": forecast(best)}
 
 
-def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
+def main(config_path: str, grid_path: str | None = None, full_refresh: bool = False) -> None:
     cfg = load_config(config_path)
     validate_conditions(cfg)
     ensure_work_dirs(cfg)
-    grid = load_grid(grid_path)
+    grid = load_grid(grid_path or config_grid(cfg))
     # A tuned config records the subset it was tuned with; use the same split.
     n_tune = (cfg.get("tuned_from") or {}).get("n_tune_patients", grid["n_tune_patients"])
     seed = (cfg.get("tuned_from") or {}).get("seed", grid["seed"])
@@ -204,6 +207,9 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
                                checkpoint=checkpoint.condition(condition, fp),
                                progress=tracking.progress_logger("calibrate/"))
         tracking.log_errors(f"calibrate/{condition}", result["llm_errors"])
+        if (result.get("llm_errors") or {}).get("zero_interval"):
+            log.info("Condition '%s': %d interval half-width(s) of 0 replaced (per variable and patient).",
+                     condition, result["llm_errors"]["zero_interval"])
         extra = {
             "llm_fallbacks": result["llm_fallbacks"],
             "llm_fallback_rate": (result["llm_fallbacks"] / max(1, len(result["stay_ids"]))
@@ -239,8 +245,9 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
 
 
 def _add_arguments(parser) -> None:
-    parser.add_argument("--grid", default=DEFAULT_GRID,
-                        help=f"tuning grid file, for the tuning/calibration split (default: {DEFAULT_GRID})")
+    parser.add_argument("--grid", default=None,
+                        help="tuning grid file, for the tuning/calibration split "
+                             f"(default: the config's tuning_grid, else {DEFAULT_GRID})")
     parser.add_argument("--full-refresh", action="store_true",
                         help="delete the calibration checkpoints and start over (default: resume)")
 

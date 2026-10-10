@@ -1,0 +1,14 @@
+# =============================================================================
+# A tuning grid with no rounds, for a config whose settings are fixed (e.g.
+# config_alliance_lean_rq2.yaml sets tuning_grid to this file): src/tune.py
+# only writes the tuned config. n_tune_patients and seed match
+# tuning_grid.yaml, so calibrate.py uses the same calibration patients.
+# =============================================================================
+tuning:
+  n_tune_patients: 128
+  seed: 42
+  max_fallback_rate: 0.10
+  min_improvement: 0.002
+  fixed:
+    baselines.lstm_seed: 42
+  rounds: []

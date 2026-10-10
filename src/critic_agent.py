@@ -28,6 +28,24 @@ from llm_client import LocalLLM, extract_json_block
 
 log = get_logger("critic_agent")
 
+CRITIC_STAGES = ("final", "raw")
+
+
+def critic_review_stage(cfg: dict) -> str:
+    """critic_agent.stage: which forecast the critic reviews.
+      final (default): the post-processed forecast, i.e. what is reported.
+                       The level anchor and damping keep it close to the
+                       observed values, so the critic rarely has anything
+                       to fix (tri_lean_exp3.4: 0 violations in every
+                       condition).
+      raw:             the LLM's own output, before post-processing, which
+                       is then applied to the reviewed forecast."""
+    stage = (cfg.get("critic_agent") or {}).get("stage", "final")
+    if stage not in CRITIC_STAGES:
+        raise ValueError(f"critic_agent.stage must be one of {CRITIC_STAGES}, not {stage!r}")
+    return stage
+
+
 CORRECTION_SYSTEM_PROMPT = (
     "You are a clinical plausibility checker for research forecasts. You will "
     "be shown a forecast for one physiological variable that contains values "

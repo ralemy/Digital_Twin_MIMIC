@@ -135,7 +135,28 @@ def plausibility_violation_comparison(name_a: str, name_b: str, data_a: dict, da
         record = critic_record(data)
         if record is not None:
             out[f"{name}_critic"] = record
+        if "y_raw" in data:
+            out[f"{name}_before_postprocess"] = before_postprocess_violations(data, variables, ranges)
     return out
+
+
+def before_postprocess_violations(data: dict, variables: list[str], ranges: dict) -> dict:
+    """Plausibility violations in the forecast post-processing started from
+    (y_raw, saved by run_experiment.py for LLM conditions): the LLM's own
+    output, or with critic_agent.stage: raw its output after the critic.
+    The critic reviews the post-processed forecast by default, and the level
+    anchor and damping keep that close to the observed values
+    (tri_lean_exp3.4: 0 violations in every condition), so this shows what
+    the model itself produces."""
+    from metrics import plausibility_violation_rate
+
+    y_raw = data["y_raw"]
+    lo = np.array([ranges[v][0] for v in variables])
+    hi = np.array([ranges[v][1] for v in variables])
+    finite = np.isfinite(y_raw)
+    n_out = int(np.sum(finite & ((y_raw < lo) | (y_raw > hi))))
+    return {"violation_rate": n_out / max(1, int(finite.sum())), "violations": n_out,
+            "per_variable": plausibility_violation_rate(y_raw, variables, ranges)}
 
 
 def model_variant_comparisons(cfg: dict, results_dir: Path) -> list[dict]:

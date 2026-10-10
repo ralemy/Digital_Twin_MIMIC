@@ -43,6 +43,7 @@ ERROR_MESSAGES = {
     "llm_timeout": "LLM request timed out - see logs for details",
     "critic_correction_failed": "critic correction failed - see logs for details",
     "absurd_values": "forecast held non-finite or absurd values (filled) - see logs for details",
+    "zero_interval": "interval half-width of 0 replaced (per variable)",
     "context_overflow": "prompt + answer filled num_ctx (context shifted) - see logs for details",
 }
 

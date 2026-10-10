@@ -23,7 +23,9 @@ training cohort's median (reference stats from pipeline.fit_models), not 0.
 A variable whose forecast holds a non-finite or absurd value (far outside
 its valid range; Med42 once returned -3e9) is treated as left out and filled
 the same way; every forecast is clipped to the variables' hard (physically
-possible) ranges, e.g. SpO2 <= 100 %.
+possible) ranges, e.g. SpO2 <= 100 %. An interval half-width of 0 is
+replaced (see ForecastingAgent._fix_zero_widths), since calibration can't
+widen it.
 
 Prompt and output options (the `forecasting_agent:` config section, tuned by
 src/tune.py; each default reproduces the original prompt):
@@ -398,6 +400,7 @@ class ForecastingAgent:
             if len(missing) == len(self.variables):
                 raise ValueError("no usable variable in forecast")
             halfwidths = self._halfwidths(parsed, missing)
+            self._fix_zero_widths(halfwidths, obs)
             if missing:
                 self._fill_missing(parsed, obs, missing)
             for var in self.variables:
@@ -442,6 +445,31 @@ class ForecastingAgent:
                 raise ValueError(f"interval_halfwidth for '{var}' has an unusable shape: {str(hw)[:80]}")
             out[var] = [abs(x) for x in vals]
         return out
+
+    def _fix_zero_widths(self, halfwidths: dict[str, list[float]], obs: np.ndarray) -> None:
+        """Half-widths of 0 (or non-finite) replaced in place: by the
+        variable's smallest positive half-width when some hours have one
+        (endpoints with start 0), else by the naive interval. A zero-width
+        interval can't be widened by calibrate.py's conformal factors, so it
+        would almost never cover (tri_lean_exp3.4: 17% of single-model Med42
+        lactate forecasts). Counted under error_counts["zero_interval"]."""
+        naive = None
+        fixed = 0
+        for var, vals in halfwidths.items():
+            ok = [x for x in vals if np.isfinite(x) and x > 0]
+            if len(ok) == len(vals):
+                continue
+            if ok:
+                floor = min(ok)
+            else:
+                if naive is None:
+                    naive = _naive_fallback(obs, self.horizon_hours, self.variables, self._fill)
+                floor = float(naive["interval_halfwidth"][var])
+            halfwidths[var] = [x if np.isfinite(x) and x > 0 else floor for x in vals]
+            fixed += 1
+        if fixed:
+            with self._fallback_lock:
+                self.error_counts["zero_interval"] = self.error_counts.get("zero_interval", 0) + fixed
 
     def _absurd_variables(self, parsed: dict, missing: list[str]) -> list[str]:
         """Variables whose forecast holds a non-finite value or one far

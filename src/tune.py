@@ -60,6 +60,12 @@ DEFAULT_GRID = "config/tuning_grid.yaml"
 # Shared with src/calibrate.py
 # ---------------------------------------------------------------------------
 
+def config_grid(cfg: dict) -> str:
+    """The config's tuning_grid (e.g. a grid without rounds, to run with
+    settings fixed in the config), else DEFAULT_GRID."""
+    return cfg.get("tuning_grid") or DEFAULT_GRID
+
+
 def load_grid(path: str) -> dict:
     grid = yaml.safe_load(Path(path).read_text())["tuning"]
     grid.setdefault("n_tune_patients", 128)
@@ -218,8 +224,9 @@ def write_tuned_config(config_path: str, grid_path: str, overrides: dict, grid: 
     return out
 
 
-def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
+def main(config_path: str, grid_path: str | None = None, full_refresh: bool = False) -> None:
     cfg = load_config(config_path)
+    grid_path = grid_path or config_grid(cfg)
     grid = load_grid(grid_path)
     ensure_work_dirs(cfg)
 
@@ -288,7 +295,8 @@ def main(config_path: str, grid_path: str, full_refresh: bool = False) -> None:
 
 
 def _add_arguments(parser) -> None:
-    parser.add_argument("--grid", default=DEFAULT_GRID, help=f"tuning grid file (default: {DEFAULT_GRID})")
+    parser.add_argument("--grid", default=None,
+                        help=f"tuning grid file (default: the config's tuning_grid, else {DEFAULT_GRID})")
     parser.add_argument("--full-refresh", action="store_true",
                         help="delete the tuning checkpoints and start over (default: resume)")
 

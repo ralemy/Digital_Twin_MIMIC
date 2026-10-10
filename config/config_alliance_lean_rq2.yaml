@@ -1,33 +1,19 @@
 # =============================================================================
-# LEAN SCOPE — the 5-variable panel of config_local.yaml, sized to run as a
-# Slurm batch job on an Alliance cluster (e.g. Rorqual, Trillium), one H100 80GB GPU
-# per job, instead of on a local machine. Run with jobs/run_all.sh lean.
+# LEAN SCOPE, RQ2 WITH THE CRITIC BEFORE POST-PROCESSING — config_alliance_lean.yaml
+# with critic_agent.stage: raw. Run with:
+#   bash jobs/run_all.sh lean --config config/config_alliance_lean_rq2.yaml --run-name <run>
 #
-# Same variable panel and cohort criteria as config_local.yaml (the 1080 Ti
-# local config); only the sizing differs, to use the H100: a larger cohort
-# (max_patients 3000 vs 300), a stronger local model (qwen2.5:32b vs
-# llama3.1:8b) plus the comparison models under llm.variants, concurrent
-# LLM requests, a bigger LSTM baseline, checkpointing, and DuckDB/CPU
-# numbers that fit a one-GPU share of a node. No new variables and no cloud/API calls — the same experiment
-# on different infrastructure.
+# In tri_lean_exp3.4 the critic reviewed the post-processed forecast, which
+# the level anchor and damping keep close to the observed values: it found
+# 0 implausible values in every condition, so RQ2 measured nothing. Here it
+# reviews the LLM's own output instead. Same cohort and split as
+# tri_lean_exp3.4 (random_seed 42), and its tuned prompt settings, fixed
+# below, so its full_pipeline (critic after post-processing) is a fourth arm,
+# paired by stay_id. Only the RQ2 conditions run.
 #
-# IMPORTANT — read before submitting a job with this file:
-#   1. Approvals and permissions: ethics approval for this use of MIMIC-IV,
-#      credentialed PhysioNet access, storage that meets the MIMIC-IV Data
-#      Use Agreement, and the model licences must all be in place before
-#      this file is used with real data — see README.md, "Before you start:
-#      approvals and permissions". Nothing in this repo can check them.
-#   2. The CPU/RAM numbers (the GPU jobs' --cpus-per-task=12 and --mem,
-#      duckdb_threads below) are conservative starting points for a
-#      one-GPU share of a node, not a per-cluster spec sheet. With slurm.gpu_jobs_only (Trillium) every job
-#      gets a quarter node instead (24 cores, ~188 GiB, no --mem). Check
-#      `sinfo -o "%N %c %m %G"` on your cluster and raise these if more is
-#      available to a single-GPU job.
-#   3. Ollama itself must already be running on 127.0.0.1:11434 before the
-#      Python steps run — the GPU jobs start it (jobs/ollama_lib.sh).
-#      This config does not start Ollama; it only talks to it.
+# Everything else is config_alliance_lean.yaml; keep the two in step. Its
+# header (approvals, CPU/RAM, Ollama) applies here too.
 # =============================================================================
-
 paths:
   # mimic-iv is the repo's symlink to $DT_MIMIC_DIR; $DT_RESULTS_DIR is where
   # results are recorded. Both come from your profile (paths.mimic_dir,
@@ -196,6 +182,9 @@ forecasting_agent:
   # more output tokens, so longer jobs); constant = one number per variable
   # (the original prompt; its 90% intervals covered 16-39% on Trillium).
   interval: endpoints
+  # Fixed at tri_lean_exp3.4's tuned values (tuning_grid below has no rounds).
+  similarity_context: trajectory
+  trend_hint: none
 
 similarity_agent:
   k_neighbors: 30
@@ -204,11 +193,15 @@ similarity_agent:
 critic_agent:
   enabled: true
   max_correction_attempts: 1
+  # The critic reviews the LLM's own forecast, before the level anchor and
+  # damping (critic_agent.critic_review_stage). After them, as in
+  # tri_lean_exp3.4, it found nothing to fix in any condition.
+  stage: raw
 
 baselines:
   run_naive: true
-  run_gbm: true
-  run_lstm: true
+  run_gbm: false                   # not needed for RQ2
+  run_lstm: false
   run_single_model_llm: true
   lstm_hidden_size: 128
   lstm_epochs: 200
@@ -216,42 +209,16 @@ baselines:
 
 conditions:
   - naive
-  # Stronger persistence (baselines.persistence_forecast): the mean of the
-  # last 6 observed hours, and half the last value + half the window mean.
-  # tri_lean_exp2: the best LLM pipelines only tied them.
-  - recent_mean
-  - persistence_blend
-  - gbm
-  - lstm
-  # Primary model (llm.model, Med42-70B): RQ1-RQ3 and the ablations.
-  - single_model_llm
+  # RQ2 with Med42 (llm.model): LLM critic vs none vs clipping.
   - full_pipeline
   - full_pipeline_no_critic
-  - full_pipeline_no_similarity
-  # Model comparison (see llm.variants), grouped by model so Ollama loads
-  # each model once. Each line is a full pass over the test split.
-  - single_model_llm@baichuan_m2
-  - full_pipeline@baichuan_m2
-  - single_model_llm@gemma3
-  - full_pipeline@gemma3
-  - single_model_llm@medgemma
-  - full_pipeline@medgemma
-  # Agent mix: MedGemma forecaster with a clip-only critic (no LLM), and
-  # with a Gemma 3 critic; compared with full_pipeline@medgemma (MedGemma
-  # critic) under evaluation.extra_comparisons.
-  - full_pipeline_clip_critic@medgemma
-  - full_pipeline@medgemma_gemma3_critic
-  - single_model_llm@llama3_70b
-  - full_pipeline@llama3_70b
-  - single_model_llm@qwen2_5_32b
-  - full_pipeline@qwen2_5_32b
+  - full_pipeline_clip_critic
 
 # Ensembles (pipeline.ensembles): the mean of the members' forecasts and
 # interval half-widths, built after the members at no GPU cost.
 # tri_lean_exp2: Med42's full pipeline averaged with the LSTM beat the LSTM
 # alone (per-patient sMAPE 0.1075 vs 0.1094, p = 0.0008).
-ensembles:
-  - [full_pipeline, lstm]
+ensembles: []
 
 evaluation:
   bootstrap_resamples: 2000
@@ -265,24 +232,10 @@ evaluation:
   # Extra paired comparisons [A, B] (A - B per-patient sMAPE, as for the
   # RQs) in statistical_analysis.json under extra_comparisons.
   extra_comparisons:
-    # Which critic suits a MedGemma forecaster?
-    - [full_pipeline_clip_critic@medgemma, full_pipeline@medgemma]
-    - [full_pipeline@medgemma_gemma3_critic, full_pipeline@medgemma]
-    - [full_pipeline@medgemma_gemma3_critic, full_pipeline_clip_critic@medgemma]
-    # Does the LLM critic beat clipping, and does the agent mix beat the
-    # primary pipeline?
-    - [full_pipeline_clip_critic@medgemma, full_pipeline]
-    - [full_pipeline@medgemma_gemma3_critic, full_pipeline]
-    # Does the primary pipeline beat stronger persistence, and does the
-    # ensemble beat each of its members?
-    - [full_pipeline, recent_mean]
-    - [full_pipeline, persistence_blend]
-    # Does it beat the classic models? (tri_lean_exp3.4: 0.1095 vs LSTM
-    # 0.1113, p = 0.03, computed outside this file.)
-    - [full_pipeline, lstm]
-    - [full_pipeline, gbm]
-    - [full_pipeline+lstm, lstm]
-    - [full_pipeline+lstm, full_pipeline]
+    # Does the LLM critic beat clipping? (RQ2 itself, LLM critic vs none,
+    # is in statistical_analysis.json under RQ2_*.)
+    - [full_pipeline_clip_critic, full_pipeline]
+    - [full_pipeline_clip_critic, full_pipeline_no_critic]
 
 logging:
   # Live aggregate metrics on Weights & Biases (src/tracking.py): progress,
@@ -296,3 +249,13 @@ logging:
     project: mimic-iv-digital-twin
     entity: null      # your default W&B account
     mode: online      # offline: write locally, `wandb sync` later
+
+# No tuning: the settings above are fixed. This grid has no rounds, so the
+# tune stage only writes the tuned config (with the same tuning/calibration
+# split as the standard grid).
+tuning_grid: config/tuning_grid_none.yaml
+
+# jobs/run_all.sh: work estimates (minutes) for 3 Med42 conditions (~57 min
+# each on Trillium's H100s; more allowed here for Nibi).
+run_all:
+  estimates_min: {tune: 30, calibrate: 200, run: 260}

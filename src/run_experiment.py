@@ -175,6 +175,9 @@ def main(config_path: str, full_refresh: bool = False) -> None:
         result = run_condition(condition, cfg, splits["train"], splits["test"], fitted_models,
                                checkpoint=cond_checkpoint, progress=tracking.progress_logger(), postprocess=pp)
         tracking.log_errors(condition, result["llm_errors"])
+        if (result.get("llm_errors") or {}).get("zero_interval"):
+            log.info("Condition '%s': %d interval half-width(s) of 0 replaced (per variable and patient).",
+                     condition, result["llm_errors"]["zero_interval"])
 
         # Share of test patients whose LLM forecast failed (no answer, bad
         # JSON, wrong shape) and was replaced by the naive forecast. Compare
@@ -215,6 +218,9 @@ def main(config_path: str, full_refresh: bool = False) -> None:
             y_true=result["y_true"], y_pred=result["y_pred"],
             y_lower=result["y_lower"], y_upper=result["y_upper"],
             stay_ids=np.array(result["stay_ids"]), **critic_extra,
+            # LLM conditions: the forecast post-processing started from, so
+            # evaluate_results.py can count plausibility violations before it.
+            **({"y_raw": result["y_raw"]} if result.get("y_raw") is not None else {}),
         )
 
         report = evaluate_twin(result["y_true"], result["y_pred"], variables,

@@ -3,8 +3,9 @@
 This page explains how the experiment's results are evaluated, why each
 metric was chosen (and others weren't), what the first full lean run on
 Trillium taught us and what we changed because of it, how the
-hyperparameters are tuned (section 4), and what the second run
-(`tri_lean_exp2`) showed and changed (section 5). Every number comes from that run, or from re-analysing
+hyperparameters are tuned (section 4), what the second run
+(`tri_lean_exp2`) showed and changed (section 5), and what the third
+(`tri_lean_exp3.4`) showed and changed (section 6). Every number comes from that run, or from re-analysing
 its saved forecasts. The run's full write-up is in its results folder
 (`README.md` next to `mimic-iv-twin-work/`).
 
@@ -603,3 +604,76 @@ weren't fitted on. Read coverage within about ±0.02 of 0.90 as calibrated.
 - **The ensemble** `full_pipeline+lstm` against LSTM.
 - **RQ1 with Med42** (single model 0.131 vs pipeline 0.111 in this run).
 - **No impossible values:** all MAE/RMSE finite and plausible; SpO2 ≤ 100.
+
+---
+
+## 6. The third lean run (`tri_lean_exp3.4`): what we learned and changed
+
+Same cohort and split as `tri_lean_exp2` (450 test patients), Med42-70B as
+the primary model, post-processing fitted per condition. Per-patient sMAPE,
+paired Wilcoxon tests.
+
+### 6.1 What the section 5.5 checks showed
+
+| Check | Result |
+|---|---|
+| Med42 full pipeline ≈ 0.110 or better | 0.1095 |
+| vs `recent_mean` / `persistence_blend` | 0.1142 (p ≈ 1e-10) / 0.1128 (p ≈ 1e-5): the LLM adds more than a level |
+| vs the classic models | LSTM 0.1113 (p = 0.03), GBM 0.1143 (p ≈ 2e-14): the first LLM condition ahead of LSTM. These two tests were computed outside `evaluate_results.py` |
+| Fitted parameters | Anchor weight > 0 everywhere (0.5 for every pipeline, 0.75, the bound, for 5 of 6 single models); damping 0.25 or 0.1, never near 1 |
+| Ensemble | 0.1092: better than LSTM (p ≈ 5e-9), not than the pipeline alone (p = 0.11) |
+| RQ1 | Pipeline 0.1095 vs single model 0.1118 (p ≈ 4e-5); without similarity 0.1119. The gap shrank from 0.02 because the single model gets the level anchor too |
+| Impossible values | None: no fallbacks, fills, non-finite values or SpO2 > 100 |
+| Coverage after calibration | 0.881–0.893 on the test patients |
+
+Pairs of conditions that are the same setup (the critic never acted, see
+6.2) score within 0.0003–0.0005 of each other: the noise of re-running the
+LLM. The 0.0018 gap to LSTM is several times that.
+
+### 6.2 What we learned
+
+1. **Zero-width intervals.** The LLMs sometimes give a half-width of 0,
+   mostly for lactate (17 % of single-model Med42 forecasts; Baichuan for
+   every variable in 8 patients). Conformal factors scale the half-width, so
+   these never widen; `calibrate.py` leaves them out of the fit, and they
+   almost never cover. `full_pipeline@baichuan_m2` reached only 0.864 on the
+   calibration patients themselves; lactate coverage was the lowest
+   (0.81–0.88).
+2. **RQ2 measured nothing.** The critic reviewed the post-processed
+   forecast, which the level anchor and damping keep close to the observed
+   values: 0 implausible values in every condition, so the critic,
+   no-critic and clip-only conditions were the same setup re-run.
+3. **The tuning noise is as large as the tuning gains.** The same settings
+   scored 0.1144 and 0.1130 in two tuning rounds; `cohort_anchor` (−0.0012)
+   and `critic.attempts2` (−0.0013) lost within that noise, so the 0.002
+   acceptance margin was right to reject them.
+4. **The headline rests on one split.** p = 0.03 against LSTM on one set of
+   450 patients.
+
+### 6.3 What we changed
+
+| Change | From finding |
+|---|---|
+| A half-width ≤ 0 is replaced: by the variable's smallest positive half-width if some hours have one, else by the naive interval (`ForecastingAgent._fix_zero_widths`, counted as `zero_interval`) | 1 |
+| `critic_agent.stage: raw` (default `final`): the critic reviews the LLM's own output, then post-processing is applied to the reviewed forecast | 2 |
+| `run_experiment.py` saves the forecast before post-processing (`y_raw`) with each LLM condition; `evaluate_results.py` reports its violations (`<condition>_before_postprocess`). `src/raw_violations.py` counts them from an older run's checkpoints | 2 |
+| `[full_pipeline, lstm]` and `[full_pipeline, gbm]` in `extra_comparisons` | 6.1 |
+| `jobs/run_all.sh --config <file>` (another base config for a run), `run_all.estimates_min` and `tuning_grid` in a config | 3, 4 |
+
+### 6.4 The next runs and what they should be judged on
+
+- **`tri_lean_exp4`** (`config/config_alliance_lean_exp4.yaml`): the same
+  experiment on a new 3000-stay sample (`random_seed: 43`), tuned again,
+  with only the conditions the claims need. Judged on whether the pipeline
+  again beats LSTM, GBM and the persistence baselines, and RQ1 holds;
+  coverage within ±0.02 of 0.90, lactate included, with `zero_interval`
+  counted.
+- **RQ2 run** (`config/config_alliance_lean_rq2.yaml`): exp3.4's cohort and
+  tuned settings with the critic before post-processing; Med42
+  `full_pipeline`, `full_pipeline_no_critic`, `full_pipeline_clip_critic`.
+  Judged on the share of values out of range before the critic, the share
+  its LLM fixes rather than clips, and sMAPE against no critic and against
+  clipping. Run it only if `src/raw_violations.py` finds violations in
+  exp3.4's raw forecasts; if it finds about none, RQ2 is a null result at
+  this scope: the models don't produce implausible values.
+

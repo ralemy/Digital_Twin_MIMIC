@@ -353,6 +353,9 @@ evaluation:
     # ensemble beat each of its members?
     - [full_pipeline, recent_mean]
     - [full_pipeline, persistence_blend]
+    # Does it beat the classic models?
+    - [full_pipeline, lstm]
+    - [full_pipeline, gbm]
     - [full_pipeline+lstm, lstm]
     - [full_pipeline+lstm, full_pipeline]
 
