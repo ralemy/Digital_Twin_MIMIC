@@ -177,6 +177,10 @@ fi
 
 source "$(cd "$(dirname "$0")" && pwd)/load_profile.sh" || exit 1
 load_profile "${PROFILE_ARGS[@]}" || exit 1
+# The cluster's longest job (profile slurm.max_job_hours or DT_MAX_JOB_HOURS;
+# default 8): the stages are split into jobs of at most this, less MARGIN_MIN.
+MAX_JOB_MIN=$(( ${DT_MAX_JOB_HOURS:-8} * 60 ))
+WORK_PER_JOB=$((MAX_JOB_MIN - MARGIN_MIN))
 cd "$DT_REPO" || exit 1
 
 if [ "$SCOPE" = lean ]; then
@@ -425,7 +429,7 @@ submit_chain() {
             # Trillium's sbatch rejects --kill-on-invalid-dep ("option not
             # recognized"). It is only a backstop there: watch_chain cancels
             # the rest of a chain once a job completes.
-            [ "${DT_CLUSTER:-}" != trillium ] && dep+=(--kill-on-invalid-dep=yes)
+            [ "${DT_KILL_ON_INVALID_DEP:-1}" = 1 ] && dep+=(--kill-on-invalid-dep=yes)
         fi
         # --log-dir: the job's Ollama log goes to this run's folder too.
         if ! jid=$(bash jobs/submit.sh --parsable --time="$(hhmm "$m")" --output="$DT_LOG_DIR/%x-%j.out" "${dep[@]}" "${SCRIPT[$stage]}" "$config" "${PROFILE_ARGS[@]}" --log-dir "$DT_LOG_DIR"); then

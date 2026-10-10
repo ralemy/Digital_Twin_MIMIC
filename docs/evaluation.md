@@ -520,7 +520,8 @@ lean.
 The run's full write-up is in its results folder (`README.md` next to
 `mimic-iv-twin-work/`). Its test patients are almost all new: the artefact
 filter changed which stays were eligible, and only 6 of the 450 overlap with
-the first run. That largely answers limitation 1 of section 3.4. The changes
+the first run. (The sample itself also wasn't reproducible until section
+7.2's fix, so a new extraction drew new patients anyway.) That largely answers limitation 1 of section 3.4. The changes
 were diagnosed on the first run's test patients and confirmed here on new
 ones.
 
@@ -610,8 +611,8 @@ weren't fitted on. Read coverage within about ±0.02 of 0.90 as calibrated.
 
 ## 6. The third lean run (`tri_lean_exp3.4`): what we learned and changed
 
-Same cohort and split as `tri_lean_exp2` (450 test patients), Med42-70B as
-the primary model, post-processing fitted per condition. Per-patient sMAPE,
+Its own extraction (450 test patients; before section 7.2's fix, so not the
+same patients as `tri_lean_exp2`), Med42-70B as the primary model, post-processing fitted per condition. Per-patient sMAPE,
 paired Wilcoxon tests.
 
 ### 6.1 What the section 5.5 checks showed
@@ -715,6 +716,7 @@ request was ~6,000 of 8,192 tokens, none truncated.
 | `forecasting_agent.per_condition` (`common.py`): prompt settings for one group, `single_model_llm` or `full_pipeline` (every `full_pipeline*` condition), over the shared ones. Rounds with `per_condition: true` in `tune.py` pick a winner per group; `trend_hint`, `cohort_anchor` and `prompt` are such rounds now. Checkpoints are keyed by each group's effective settings, so trials already run are reused | 1 |
 | `baselines.lstm_input: ffill_mask` (`baselines.py`): the last measured value carried forward plus a measured/not channel per variable; set in the lean, full and exp4 configs (the default, `zero_fill`, keeps older runs reproducible) | 2 |
 | `jobs/ollama_lib.sh`: the libraries are read into the page cache before `ollama serve`, `OLLAMA_VULKAN=false`, and a job stops unless Ollama found the GPU through CUDA (`DT_OLLAMA_REQUIRE_CUDA=0` skips the check) | 3 |
+| `extract_cohort.py`: eligible stays sorted by `stay_id` before the seeded 3000-stay sample. It sampled by row position from a DuckDB result without `ORDER BY`, so the same seed drew a different cohort per extraction: the Nibi RQ2 run shared 1509 of 3000 stays (214 of 450 test patients) with exp3.4, from identical raw panels. That run uses exp3.4's `cohort.parquet` and `panel_long.parquet` instead; runs extracted before the fix keep their own files as the record of their cohort | — |
 
 Replaying `fir_full_v2`'s tuning with these rules: the single model keeps
 `trend_hint: none`, the pipeline the default (`slope`; `damped_note` gained

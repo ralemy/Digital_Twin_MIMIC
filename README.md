@@ -129,6 +129,12 @@ shells get the variables from `~/.bashrc` automatically.
 |---|---|---|---|
 | `slurm.account` | your allocation, e.g. `def-<pi>`; `sshare -U -u $USER` lists yours (use the `def-...` one — GPU jobs are charged to its `_gpu` counterpart automatically) | `DT_ACCOUNT`, exported as `SBATCH_ACCOUNT`/`SALLOC_ACCOUNT` | |
 | `slurm.gpu_jobs_only` | `true` where every job must take a GPU and may not ask for memory (Trillium's GPU subcluster); `jobs/submit.sh` then gives every job one GPU and drops `--mem`. Empty: `true` on Trillium, `false` elsewhere | `DT_GPU_JOBS_ONLY` | |
+| `slurm.gpu` | `--gpus-per-node` for the GPU jobs, e.g. `h100:1` (empty: the job scripts' `h100:1`) | `DT_GPU`* | |
+| `slurm.gpu_job_mem` | `--mem` for the GPU jobs, e.g. `192000M` (empty: the scripts' `128000M`) | `DT_GPU_JOB_MEM`* | |
+| `slurm.gpu_job_cpus` | `--cpus-per-task` for the GPU jobs (empty: the scripts' value) | `DT_GPU_JOB_CPUS`* | |
+| `slurm.extra_sbatch_options` | sbatch options added to every job, e.g. `--partition=... --qos=...` | `DT_SBATCH_EXTRA`* | |
+| `slurm.max_job_hours` | the longest job `jobs/run_all.sh` submits; longer stages are split into a chain of jobs that resume from checkpoints (empty: 8) | `DT_MAX_JOB_HOURS`* | |
+| `slurm.kill_on_invalid_dep` | whether `run_all.sh` passes `--kill-on-invalid-dep` (empty: `false` on Trillium, whose sbatch rejects it, else `true`) | `DT_KILL_ON_INVALID_DEP`* | |
 | `paths.mimic_dir` | where the MIMIC-IV files (`hosp/`, `icu/`) are downloaded | `DT_MIMIC_DIR` | `mimic-iv` |
 | `paths.results_dir` | where results are recorded: `<results_dir>/mimic-iv-twin-work` (lean) and `<results_dir>/mimic-iv-twin-work-full` (full). Must be on `$SCRATCH` when `workers_can_write_repo` is `false` | `DT_RESULTS_DIR` | |
 | `paths.logs_dir` | where job `.out` files and Ollama logs go (empty: `$DT_REPO/logs`). Must be on `$SCRATCH` when `workers_can_write_repo` is `false` | `DT_LOGS_ROOT` | |
@@ -140,6 +146,13 @@ shells get the variables from `~/.bashrc` automatically.
 | `environment.workers_have_internet` | whether the cluster's compute nodes reach the internet, e.g. `false` on Rorqual and Trillium. With `false`, downloads run on a login node (section 4). Empty: `false` on Trillium, `true` elsewhere | `DT_WORKER_INTERNET` | |
 | `environment.workers_can_write_repo` | whether compute nodes can write the repo, `$HOME` and `/project`. With `false`, the setup refuses a `results_dir` or `logs_dir` there, and makes the tuned configs (`config/<config>_tuned.yaml`) symlinks into `$DT_RESULTS_DIR/tuned-configs`. Empty: `false` on Trillium, `true` elsewhere | `DT_WORKER_WRITES_REPO` | `config/*_tuned.yaml` (when `false`) |
 | `physionet.username`, `physionet.password` | your PhysioNet account, credentialed for MIMIC-IV — read only by the download job | (not exported) | |
+
+\* Read each time a job is submitted, not written to `~/.bashrc`; an
+environment variable of that name, when set, overrides the profile for that
+command (e.g. `DT_GPU_JOB_MEM=192000M bash jobs/run_all.sh ...`). With
+`gpu_jobs_only`, the GPU, memory and CPU settings don't apply. Together with
+the configs (`run_all.sh --config <file>`), these are how clusters differ:
+the code is the same everywhere.
 
 Each `true`/`false` key also accepts `yes`/`no`, `on`/`off` and `1`/`0`;
 anything else stops the setup with a message. The cluster is taken from

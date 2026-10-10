@@ -196,6 +196,33 @@ values = {
     "DT_GPU_JOBS_ONLY": flag("slurm", "gpu_jobs_only", "1" if trillium else "0"),
     "DT_LOGS_ROOT": location("logs_dir", "$DT_REPO/logs"),
 }
+
+# Per-cluster job settings (slurm section), applied by jobs/submit.sh and
+# jobs/run_all.sh on every job, so no job script needs editing on a cluster.
+# An environment variable of the same name, when set, wins over the profile
+# (e.g. DT_GPU_JOB_MEM=192000M bash jobs/run_all.sh ...). Empty = the job
+# script's own #SBATCH value.
+def setting(var, section, key, default=""):
+    env = os.environ.get(var, "").strip()
+    return env if env else (get(section, key) or default)
+
+values.update({
+    "DT_GPU": setting("DT_GPU", "slurm", "gpu"),                          # --gpus-per-node, e.g. h100:1
+    "DT_GPU_JOB_MEM": setting("DT_GPU_JOB_MEM", "slurm", "gpu_job_mem"),  # --mem of GPU jobs, e.g. 128000M
+    "DT_GPU_JOB_CPUS": setting("DT_GPU_JOB_CPUS", "slurm", "gpu_job_cpus"),
+    "DT_SBATCH_EXTRA": setting("DT_SBATCH_EXTRA", "slurm", "extra_sbatch_options"),
+    "DT_MAX_JOB_HOURS": setting("DT_MAX_JOB_HOURS", "slurm", "max_job_hours", "8"),
+    "DT_KILL_ON_INVALID_DEP": os.environ.get("DT_KILL_ON_INVALID_DEP", "").strip()
+                              or flag("slurm", "kill_on_invalid_dep", "0" if trillium else "1"),
+})
+if values["DT_GPU_JOB_MEM"] and not values["DT_GPU_JOB_MEM"][:-1].isdigit():
+    problems.append(f"slurm.gpu_job_mem must look like 128000M or 128G: {values['DT_GPU_JOB_MEM']}")
+if values["DT_GPU_JOB_CPUS"] and not values["DT_GPU_JOB_CPUS"].isdigit():
+    problems.append(f"slurm.gpu_job_cpus must be a whole number: {values['DT_GPU_JOB_CPUS']}")
+if not values["DT_MAX_JOB_HOURS"].isdigit() or not 2 <= int(values["DT_MAX_JOB_HOURS"]) <= 72:
+    problems.append(f"slurm.max_job_hours must be a whole number from 2 to 72: {values['DT_MAX_JOB_HOURS']}")
+if values["DT_KILL_ON_INVALID_DEP"] not in ("0", "1"):
+    problems.append(f"DT_KILL_ON_INVALID_DEP must be 0 or 1: {values['DT_KILL_ON_INVALID_DEP']}")
 if values["DT_WORKER_WRITES_REPO"] == "0":
     # Jobs write results and logs; compute nodes here only read $HOME and /project.
     read_only = [os.path.realpath(d) for d in

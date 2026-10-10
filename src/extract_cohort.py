@@ -111,6 +111,7 @@ def build_eligible_stays(con: duckdb.DuckDBPyConnection, cfg: dict) -> pd.DataFr
         JOIN adm a USING (hadm_id)
         WHERE p.anchor_age >= {c['min_age_years']}
           {first_stay_clause}
+        ORDER BY st.stay_id
     """
     df = con.execute(query, [str(icustays_path), str(patients_path), str(admissions_path)]).fetchdf()
     log.info("Stays passing age/LOS/first-stay filters: %d", len(df))
@@ -332,7 +333,11 @@ def resample_and_filter(cfg: dict, eligible_stays: pd.DataFrame, item_mapping: d
     log.info("Stays passing %.0f%% panel-coverage threshold: %d / %d",
               c["min_panel_coverage"] * 100, len(keep_stays), n_eligible)
 
-    cohort = eligible_stays[eligible_stays["stay_id"].isin(keep_stays)].copy()
+    # Sorted, so the seeded sample below (by row position) and assign_splits
+    # draw the same stays every time. Before, the order was whatever DuckDB's
+    # parallel join returned: the same seed drew a different cohort on
+    # Nibi than on Trillium (1509 of 3000 stays in common, 2026-10-10).
+    cohort = eligible_stays[eligible_stays["stay_id"].isin(keep_stays)].sort_values("stay_id").reset_index(drop=True)
     if c["max_patients"] is not None and len(cohort) > c["max_patients"]:
         cohort = cohort.sample(n=c["max_patients"], random_state=c["random_seed"]).reset_index(drop=True)
         log.info("Subsampled cohort to max_patients=%d for this run.", c["max_patients"])

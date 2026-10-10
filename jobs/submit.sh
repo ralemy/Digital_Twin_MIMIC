@@ -54,6 +54,27 @@ if [ "$has_output" -eq 0 ]; then
     SBATCH_OPTS+=("--output=$DT_LOG_DIR/%x-%j.out")
 fi
 
+# Per-cluster settings from the profile's slurm section (or the environment;
+# see jobs/setup_bash.sh): sbatch options on the command line override the
+# script's #SBATCH lines, so the job scripts stay the same on every cluster.
+# An option given to this script explicitly wins over them.
+given() {   # given <option>: is --<option> among the options passed in?
+    local opt
+    for opt in "${SBATCH_OPTS[@]}"; do
+        case "$opt" in "--$1="*|"--$1") return 0 ;; esac
+    done
+    return 1
+}
+if [ -n "${DT_SBATCH_EXTRA:-}" ]; then
+    read -r -a extra <<< "$DT_SBATCH_EXTRA"
+    SBATCH_OPTS=("${extra[@]}" "${SBATCH_OPTS[@]}")
+fi
+if [ "$DT_GPU_JOBS_ONLY" != 1 ] && grep -qE '^#SBATCH[[:space:]]+--(gpus-per-node|gres=gpu|gpus)' "$JOB_SCRIPT"; then
+    if [ -n "${DT_GPU:-}" ] && ! given gpus-per-node; then SBATCH_OPTS+=("--gpus-per-node=$DT_GPU"); fi
+    if [ -n "${DT_GPU_JOB_MEM:-}" ] && ! given mem; then SBATCH_OPTS+=("--mem=$DT_GPU_JOB_MEM"); fi
+    if [ -n "${DT_GPU_JOB_CPUS:-}" ] && ! given cpus-per-task; then SBATCH_OPTS+=("--cpus-per-task=$DT_GPU_JOB_CPUS"); fi
+fi
+
 if [ "$DT_GPU_JOBS_ONLY" = 1 ]; then
     if [ "$DT_CLUSTER" = trillium ]; then
         case "$(hostname -s)" in

@@ -38,6 +38,20 @@ slurm:
   # false elsewhere.
   gpu_jobs_only:
 
+  # Job resources per cluster, so no job script needs editing. Empty = the
+  # job script's own #SBATCH value. Each can be overridden for one command
+  # by an environment variable (in brackets), e.g.
+  #   DT_GPU_JOB_MEM=192000M bash jobs/run_all.sh ...
+  # Not used with gpu_jobs_only (except extra_sbatch_options).
+  gpu:                    # [DT_GPU] --gpus-per-node of the GPU jobs, e.g. h100:1 (scripts: h100:1)
+  gpu_job_mem:            # [DT_GPU_JOB_MEM] --mem of the GPU jobs, e.g. 192000M (scripts: 128000M)
+  gpu_job_cpus:           # [DT_GPU_JOB_CPUS] --cpus-per-task of the GPU jobs (scripts: 12)
+  extra_sbatch_options:   # [DT_SBATCH_EXTRA] added to every job, e.g. "--partition=... --qos=..."
+  max_job_hours:          # [DT_MAX_JOB_HOURS] longest job run_all.sh submits (default 8);
+                          # longer stages run as a chain of jobs resuming from checkpoints
+  kill_on_invalid_dep:    # [DT_KILL_ON_INVALID_DEP] run_all.sh's --kill-on-invalid-dep
+                          # (default: false on Trillium, whose sbatch rejects it; else true)
+
 paths:
   # Where the MIMIC-IV files (hosp/, icu/) are downloaded — ~10 GB. Project
   # space is backed up and not purged; only credentialed people may be able to
