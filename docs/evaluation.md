@@ -723,3 +723,43 @@ Replaying `fir_full_v2`'s tuning with these rules: the single model keeps
 0.00198, just under `min_improvement`). The re-run needs 6 new Med42
 pipeline evaluations and the LSTM trials.
 
+---
+
+## 8. Pooling the three lean samples (`src/pool_runs.py`)
+
+`tri_lean_exp3.4` (seed 42), `tri_lean_exp4` (43) and `ror_lean_exp5` (44)
+each test the claims on a different sample of 450 test patients (17 test
+patients appear in two samples). `src/pool_runs.py` reads their saved
+forecasts and repeats each paired comparison per sample, pooled over all
+1,350 patients (with a patient-bootstrap CI), and within the RQ3 subgroups,
+with a Mann-Whitney test of whether the difference changes between them. No
+GPU: it runs in seconds on a login node. The samples and comparisons are in
+`config/pooled_lean.yaml`, whose header says how to lay out the packed
+runs.
+
+exp3.4's LSTM saw unmeasured hours as the cohort mean (`zero_fill`); exp4 and
+exp5 use `ffill_mask` (7.2). `tri_lean_exp3.4_lstm`
+(`config/config_alliance_lean_exp3.4_lstm.yaml`) re-trained the `ffill_mask`
+LSTM on exp3.4's patients (its naive forecasts are identical to exp3.4's,
+so the split is the same), and the spec takes sample s42's LSTM from it.
+
+Results (per-patient sMAPE, A - B; Wilcoxon p):
+
+| Comparison | s42 | s43 | s44 | Pooled (n = 1,350) |
+|---|---|---|---|---|
+| RQ1: pipeline - single model | -0.0023 (4e-5) | -0.0030 (0.001) | -0.0033 (4e-8) | -0.0029 (3e-13) |
+| pipeline - LSTM | -0.0010 (0.053) | -0.0016 (0.16) | -0.0015 (0.17) | -0.0014 (0.007) |
+| pipeline+LSTM - LSTM | -0.0019 (2e-8) | -0.0026 (7e-11) | -0.0026 (2e-9) | -0.0024 (1e-25) |
+| pipeline+LSTM - pipeline | -0.0008 (0.035) | -0.0011 (3e-4) | -0.0011 (8e-4) | -0.0010 (1e-7) |
+| pipeline - GBM | -0.0048 | -0.0045 | -0.0054 | -0.0049 (3e-34) |
+| pipeline - recent_mean | -0.0047 | -0.0037 | -0.0049 | -0.0044 (6e-29) |
+| pipeline - no similarity | -0.0024 | -0.0045 | -0.0053 | -0.0041 (8e-27) |
+| Med42 - Llama-3-70B pipeline | -0.0001 (0.35) | -0.0008 (0.064) | -0.0012 (6e-5) | -0.0007 (1e-4) |
+
+RQ3 subgroups (pooled, exploratory: noticed in exp4 before the pooling was
+specified): the pipeline beats the single model alike in stable (-0.0028)
+and deteriorating patients (-0.0032; interaction p = 0.94). Its lead over
+the LSTM is mostly in deteriorating patients (-0.0032, p = 0.01, vs stable
+-0.0006, p = 0.12; interaction p = 0.11; seen in s43 and s44, not s42), and
+so is the ensemble's (-0.0037 vs -0.0019; interaction p = 0.013).
+

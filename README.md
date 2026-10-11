@@ -827,6 +827,7 @@ src/calibrate.py              step 3c — split-conformal interval calibration
 src/run_experiment.py         step 3 — main entry point
 src/evaluate_results.py       step 4 — RQ1/RQ2/RQ3 statistical analysis
 src/select_rq_model.py        choose another model for the RQs (validation data)
+src/pool_runs.py              comparisons pooled over runs (samples) and RQ3 subgroups; spec config/pooled_lean.yaml
 src/harmonization_agent.py    data-harmonization (ETL) agent
 src/similarity_agent.py       patient-similarity agent (local k-NN)
 src/llm_client.py             local LLM wrapper (Ollama, 127.0.0.1 only)

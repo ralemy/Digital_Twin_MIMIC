@@ -1,0 +1,43 @@
+# =============================================================================
+# The lean claims over the three independent samples of patients — read by
+# src/pool_runs.py (no GPU):
+#   python src/pool_runs.py config/pooled_lean.yaml --root <dir> --json <dir>/pooled_lean.json
+# <dir> holds each run untarred from its <run>_results.tar (jobs/pack_run.sh)
+# into <dir>/<run>/, so each run's results are at
+# <dir>/<run>/mimic-iv-twin-work/results_tuned/.
+#
+# Same LSTM in every sample: tri_lean_exp3.4 trained it with lstm_input
+# zero_fill, tri_lean_exp4 and ror_lean_exp5 with ffill_mask
+# (docs/evaluation.md 7.2); tri_lean_exp3.4_lstm re-trained the ffill_mask
+# LSTM on exp3.4's patients, so sample s42 takes its LSTM from there (and its
+# full_pipeline+lstm is rebuilt from the members). Every sample is scored as
+# its own run scored it: post-processing and interval factors fitted on its
+# own calibration patients.
+# =============================================================================
+samples:
+  - name: s42                        # tri_lean_exp3.4, Trillium
+    results_dir: tri_lean_exp3.4/mimic-iv-twin-work/results_tuned
+    overrides:
+      lstm: tri_lean_exp3.4_lstm/mimic-iv-twin-work/results_tuned
+  - name: s43                        # tri_lean_exp4, Trillium
+    results_dir: tri_lean_exp4/mimic-iv-twin-work/results_tuned
+  - name: s44                        # ror_lean_exp5, Rorqual
+    results_dir: ror_lean_exp5/mimic-iv-twin-work/results_tuned
+
+# [A, B]: A - B per-patient sMAPE. The ensemble and the subgroup findings
+# were noticed in single runs before this pooling was specified (2026-10-11):
+# report the subgroup tests as exploratory.
+comparisons:
+  - [full_pipeline, single_model_llm]          # RQ1
+  - [full_pipeline, lstm]
+  - [full_pipeline+lstm, lstm]
+  - [full_pipeline+lstm, full_pipeline]
+  - [full_pipeline, gbm]
+  - [full_pipeline, recent_mean]
+  - [full_pipeline, persistence_blend]
+  - [full_pipeline, full_pipeline_no_similarity]   # what the similarity agent adds
+  - [full_pipeline, full_pipeline@llama3_70b]      # Med42 vs its base model
+
+bootstrap_resamples: 2000
+bootstrap_alpha: 0.05
+seed: 42
