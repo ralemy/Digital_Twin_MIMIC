@@ -763,3 +763,26 @@ the LSTM is mostly in deteriorating patients (-0.0032, p = 0.01, vs stable
 -0.0006, p = 0.12; interaction p = 0.11; seen in s43 and s44, not s42), and
 so is the ensemble's (-0.0037 vs -0.0019; interaction p = 0.013).
 
+
+### 8.1 Does the comparison with the LSTM depend on its seed?
+
+Every run trained its LSTM with seed 42 only. `src/lstm_seeds.py` re-trained
+it with seeds 42-46 on each sample's patients (Trillium job 1078102,
+Rorqual job 22994509; re-training seed 42 reproduced each run's LSTM exactly),
+and `config/pooled_lean_lstm_seeds.yaml` repeats the comparisons with each.
+Test sMAPE of the LSTM varies by up to 0.0022 between seeds within a sample
+(s42 0.1099-0.1117, s43 0.1089-0.1111, s44 0.1089-0.1097).
+
+| Pooled over 1,350 patients | seed 42 | 43 | 44 | 45 | 46 |
+|---|---|---|---|---|---|
+| pipeline - LSTM | -0.0014 (p = 0.007) | -0.0018 (7e-4) | -0.0018 (9e-5) | -0.0019 (2e-4) | -0.0014 (0.003) |
+| ensemble - LSTM | -0.0024 (1e-25) | -0.0027 (4e-29) | -0.0026 (2e-31) | -0.0026 (4e-28) | -0.0024 (5e-26) |
+| ensemble - pipeline | -0.0010 (1e-7) | -0.0009 (2e-6) | -0.0008 (2e-5) | -0.0006 (4e-5) | -0.0010 (1e-7) |
+| pipeline - LSTM, deteriorating | -0.0032 (0.01) | -0.0039 (0.013) | -0.0034 (0.001) | -0.0046 (6e-4) | -0.0030 (0.023) |
+
+Every conclusion holds for every seed, and seed 42, the one the runs used,
+gives the pipeline its smallest lead over the LSTM (tied with 46): the
+reported comparison is the conservative one. With the other seeds the
+pipeline also beats the LSTM among stable patients (p = 0.012-0.035), so
+"the lead is concentrated in deteriorating patients" is weaker than with
+seed 42 alone (interaction p = 0.024-0.28).
