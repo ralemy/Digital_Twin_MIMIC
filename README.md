@@ -812,10 +812,13 @@ jobs/step3b_tune.sh <cfg>                 step 3b (GPU)
 jobs/step3c_calibrate.sh <tuned>          step 3c (GPU)
 jobs/step3_run_experiment.sh <tuned>     step 3 (GPU)
 jobs/step4_evaluate_results.sh <tuned>   step 4
+jobs/lstm_seeds.sh <tuned> [...]          LSTM re-trained with other seeds on finished runs (GPU)
 jobs/ollama_lib.sh                        start/stop Ollama inside a GPU job
 jobs/progress_lib.sh                      log-friendly download progress (prep1, prep2)
 config/config_alliance_lean.yaml          5-variable panel (the default)
 config/config_alliance_full.yaml          19-variable panel
+config/config_alliance_lean_*.yaml        lean variants for single experiments (header of each says which)
+config/pooled_lean*.yaml                  specs for src/pool_runs.py (three lean samples; LSTM seeds)
 config/tuning_grid.yaml                   hyperparameter search grid (step 3b)
 config/profile.sample.yml                 template for your profile, ~/.config/dt_profile.yml
 config/config_local.yaml                  original single-workstation (1080 Ti) config
@@ -828,6 +831,7 @@ src/run_experiment.py         step 3 — main entry point
 src/evaluate_results.py       step 4 — RQ1/RQ2/RQ3 statistical analysis
 src/select_rq_model.py        choose another model for the RQs (validation data)
 src/pool_runs.py              comparisons pooled over runs (samples) and RQ3 subgroups; spec config/pooled_lean.yaml
+src/lstm_seeds.py             the LSTM baseline re-trained with other seeds on a finished run's patients
 src/harmonization_agent.py    data-harmonization (ETL) agent
 src/similarity_agent.py       patient-similarity agent (local k-NN)
 src/llm_client.py             local LLM wrapper (Ollama, 127.0.0.1 only)
