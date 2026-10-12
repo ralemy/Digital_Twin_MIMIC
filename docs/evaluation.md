@@ -786,3 +786,70 @@ reported comparison is the conservative one. With the other seeds the
 pipeline also beats the LSTM among stable patients (p = 0.012-0.035), so
 "the lead is concentrated in deteriorating patients" is weaker than with
 seed 42 alone (interaction p = 0.024-0.28).
+
+### 8.2 Post-processing fitted separately for vital signs and labs
+
+Fitted post-processing (5.3) uses one drift damping and one anchor weight
+for all variables. `src/rescore_postprocess.py` refits it from the saved
+pre-post-processing forecasts (`y_raw`), with no LLM calls, and writes the
+result to `results_tuned/rescored_<strategy>_<grid>/`, leaving the run's own
+results untouched. Its default (`--strategy global --grid standard`)
+reproduces `calibrate.py`'s fit exactly: same settings, test sMAPE and
+coverage, checked on tri_lean_exp3.4, tri_lean_exp4, ror_lean_exp5 and
+ror_lean_fullcohort. On Fir's full-scope calibration forecasts, a two-fold
+cross-validation on the calibration patients gave, against the current fit:
+an extended grid (damping 0-1, anchor 0-1) -0.0003 on average; one setting
+for the vital signs and one for the labs (`vitals_labs`) -0.0014 (better in
+14 of 16 LLM conditions); one per variable -0.0012.
+
+`vitals_labs` with the extended grid, applied to the three lean samples
+(`config/pooled_lean_rescored.yaml`, pooled over 1,350 test patients):
+
+| Comparison (A - B) | Runs' own fit | vitals_labs | 
+|---|---|---|
+| RQ1: pipeline - single model | -0.0029 (p = 3e-13) | -0.0020 (p = 2e-7); every sample p <= 0.006 |
+| pipeline - no similarity | -0.0041 | -0.0029 (p = 1e-16) |
+| pipeline - LSTM | -0.0014 (0.007) | -0.0015 (0.004) |
+| ensemble - LSTM | -0.0024 (1e-25) | -0.0024 (1e-26) |
+| ensemble - pipeline | -0.0010 (1e-7) | -0.0010 (2e-7) |
+| pipeline - GBM / recent_mean | -0.0049 / -0.0044 | -0.0050 / -0.0045 |
+
+Coverage after calibration is unchanged. The refit helps the single
+models (-0.0004 to -0.0016 test sMAPE) and the pipeline without the
+similarity agent (-0.0011 to -0.0013), not the full pipelines (-0.0003 to
++0.0003): the shared setting suited the pipelines and penalised the single
+models, mostly on lactate. About a third of the RQ1 gap came from that, the
+same kind of shared-setting bias as 7.1; RQ1 still holds on every sample,
+but among deteriorating patients it is no longer significant (-0.0013,
+p = 0.12). Whether to adopt the refit (for the lean and full scopes alike)
+is open; it needs no GPU time, and the full scope's must wait for Fir.
+
+### 8.3 Lactate intervals that under-cover
+
+In ror_lean_fullcohort the calibrated lactate intervals of naive, the
+persistence baselines and the single model covered 0.81-0.83 of test values
+(target 0.90); tri_lean_exp3.4 showed 0.81-0.88. `src/diagnose_coverage.py`
+(reproduces the calibration-set coverage, 0.900-0.904):
+
+- It is a shift between calibration and test patients, not chance: the
+  test nonconformity scores' 90th percentile is about twice the calibration
+  one (KS p <= 2e-6), and 0.90 lies outside the patient-bootstrap range of
+  the test coverage. GBM, the LSTM and (less so) the pipeline are not
+  affected (0.88-0.92).
+- The lactate factor rests on few patients (190 calibration patients with a
+  lactate value in the full cohort, 110 in ror_lean_exp5) and heavy-tailed
+  errors, so it is unstable: in ror_lean_exp5 naive's factor is 6.3 with a
+  bootstrap range of 3.3-13.7, and the same conditions over-cover there
+  (0.94-0.95).
+- Coverage falls with lead time for persistence forecasts (about 0.89 in
+  hours 1-8, 0.73-0.77 in hours 17-24). One factor per hour band (opt-in
+  `--by-hour`) evens this out but leaves overall coverage at 0.81-0.84.
+- One factor for patients with and without lactate in the observation
+  window (opt-in `--mondrian`) keeps coverage and narrows the intervals a lot
+  where some patients have none (ror_lean_exp5: x0.42-0.94); every
+  full-cohort patient has lactate, so it cannot help there.
+
+No recalibration scheme fixes a calibration/test shift on 110-190
+patients; more calibration patients would. Report lactate coverage per
+condition as a limitation; calibrate.py and evaluate_results.py are
+unchanged.
