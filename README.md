@@ -594,6 +594,63 @@ fingerprints as a run of all of them.
 
 Record in the run's notes which conditions ran where.
 
+### Several clusters for one run (`src/multi_cluster.py`)
+
+`src/multi_cluster.py` does the split above automatically, for calibration
+(step 3c) and the test stage (step 3), to shorten a run that would take days
+on one cluster. One cluster is the **target**: it runs models, resolve,
+extract and tune (through `jobs/run_all.sh --until tune`), holds the results,
+evaluates and packs the run. **Helpers** each take a share of the LLM
+conditions in steps 3c and 3. The orchestrator runs on a **hub**: a login
+node with an open SSH connection (a ControlMaster socket, opened once with
+Duo) to every cluster, since the clusters can't log in to each other.
+
+```bash
+python src/multi_cluster.py plan  full --run-name <run> --target fir --helpers trillium,rorqual
+python src/multi_cluster.py start full --run-name <run> --target fir --helpers trillium,rorqual
+python src/multi_cluster.py status <run>      # stop <run> stops the orchestrator; jobs keep running
+```
+
+`--target` and `--helpers` override `config/multi_cluster.yaml`, which also
+lists each cluster's SSH host and socket, job time limit and relative speed,
+the model weights used to share out the work, and an optional fixed
+assignment. `--config` picks the base config as for `run_all.sh`.
+
+**Assumed on every cluster, and checked before anything is submitted:** the
+repo is set up with `jobs/setup_bash.sh` (its profile gives the locations;
+the orchestrator reads it through `jobs/load_profile.sh`, as the jobs do);
+the Ollama models of the cluster's share are in `$OLLAMA_MODELS` (the target
+needs every model of the run, since it computes any condition a helper does
+not deliver); on the target, the repo's `mimic-iv` link resolves to MIMIC-IV.
+Helpers never read MIMIC-IV. Each cluster's checkout must be at the hub's
+commit; with `auto_pull: true` the orchestrator pulls a cluster whose working
+tree is clean and which has no project jobs queued or running. A missing item
+is reported in the log at every check until it is fixed.
+
+**Sequence**, each step only after the previous one is complete, whatever
+order the clusters finish in:
+1. the target prepares the run (`run_all.sh --until tune`);
+2. its cohort, panel, cache and tuned config are copied to the helpers, and
+   every condition's calibration fingerprint must match on all clusters;
+3. every cluster calibrates its share (`step3c ... --conditions`); each
+   condition a helper finishes is copied into the target's checkpoints;
+4. the target runs step 3c for all conditions, which loads everything from
+   the checkpoints and writes the complete `calibration.json`;
+5. `calibration.json` goes to the helpers; the test-stage fingerprints must
+   match;
+6. steps 3-4 again for the test stage (step 3);
+7. the target evaluates; the helpers' job logs and a record of who ran what
+   (`multi_cluster.json` in the work dir) are copied to it, and it packs the
+   run.
+
+A helper share that fails is resubmitted (`max_retries`); after that, or when
+a helper stays unreachable for `give_up_hours`, the target computes its
+remaining conditions in step 4 or 6. State and log are in
+`multi_runs/<run>/` on the hub, so the orchestrator can be stopped and started
+again at any time. If an SSH socket closes, open it again (Duo) and the next
+check carries on. `config/config_test_multicluster.yaml` (baselines only) tests
+the whole sequence in minutes of GPU time.
+
 ### The full variable set
 
 The steps are identical with `CONFIG=config/config_alliance_full.yaml`,

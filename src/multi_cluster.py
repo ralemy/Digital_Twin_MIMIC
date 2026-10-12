@@ -742,9 +742,10 @@ class Orchestrator:
             p.communicate(json.dumps(rec, indent=2).encode(), timeout=120)
             f["record"] = p.returncode == 0
         if not f["packed"]:
-            r = self.sh(t, f"bash jobs/pack_run.sh {q(self.run_name)} 2>&1 | tail -3", timeout=3600)
+            # where run_all.sh packs a run: $DT_RESULTS_DIR/<run>_results.tar
+            r = self.sh(t, f'bash jobs/pack_run.sh {q(self.run_name)} -o "$DT_RESULTS_DIR" 2>&1 | tail -3', timeout=3600)
             f["packed"] = r.returncode == 0
-            self.event(f"{t}: pack_run.sh: {r.stdout.strip()[-200:]}")
+            self.event(f"{t}: pack_run.sh: " + " | ".join(r.stdout.strip().splitlines()[-3:]))
         return f["record"] and f["packed"]
 
     def step(self) -> None:
