@@ -1,0 +1,81 @@
+# =============================================================================
+# One run on several clusters — read by src/multi_cluster.py, which runs on a
+# HUB: a login node with an open SSH connection to every cluster below (the
+# clusters cannot reach each other: logins need Duo). Without this file
+# everything runs on one cluster with jobs/run_all.sh, as before.
+#
+#   python src/multi_cluster.py plan  --multi config/multi_cluster.yaml full --run-name <run>
+#   python src/multi_cluster.py start --multi config/multi_cluster.yaml full --run-name <run>
+#   python src/multi_cluster.py status <run>      # stop <run> stops the orchestrator only
+#
+# The target runs resolve, extract and tune (jobs/run_all.sh --until tune),
+# then calibration and the test stage are split by condition between the
+# target and the helpers; each finished helper condition is copied to the
+# target, which assembles the stage (README, "Several clusters for one run").
+# =============================================================================
+
+# The cluster that holds the run: its results, evaluation and packed archive.
+target: fir
+# Clusters that take a share of calibration and the test stage.
+helpers: [trillium, rorqual]
+
+clusters:
+  # host: the SSH destination; control_path: an open ControlMaster socket to
+  # it (opened once with Duo: ssh -o ControlMaster=auto -o ControlPersist=yes
+  # -o ControlPath=<path> -fN <host>); host: local for the hub itself.
+  # Locations (repo, results, logs) come from each cluster's own profile
+  # (~/.bashrc after jobs/setup_bash.sh), so they are not repeated here.
+  # max_job_hours: the time limit of each job submitted there.
+  # speed: relative throughput (1.0 = one H100); scales the share of work.
+  fir:
+    host: fir.alliancecan.ca
+    control_path: ~/.ssh/cm-fir
+    max_job_hours: 8
+    speed: 1.0
+  trillium:
+    host: ralemy@trillium-gpu.scinet.utoronto.ca     # the GPU login node (jobs there must take a GPU)
+    control_path: ~/.ssh/cm-tri
+    max_job_hours: 7.75
+    speed: 1.0
+  rorqual:
+    host: ralemy@rorqual.alliancecan.ca
+    control_path: ~/.ssh/cm-ror
+    max_job_hours: 8
+    speed: 1.0
+  nibi:
+    host: local
+    max_job_hours: 8
+    speed: 1.0
+
+# Relative GPU time of one condition, by its model's tag (first match in
+# order; matched against the Ollama model name of the condition's variant).
+# Measured on H100s: Med42/Llama-3-70B ~850 s per batch of 32 at the full
+# scope, MedGemma/Gemma 3 27B ~590 s, Qwen2.5/Baichuan-M2 32B ~510 s.
+model_weights:
+  - {match: "70b", weight: 1.0}
+  - {match: "27b", weight: 0.7}
+  - {match: "32b", weight: 0.6}
+  - {match: "", weight: 1.0}
+baseline_weight: 0.15            # naive, persistence, GBM, LSTM (always on the target)
+
+# Minutes of one weight-1.0 condition per stage and scope, to size the jobs'
+# time limits (450 test patients; calibration has 322, about 0.72x).
+minutes_per_unit:
+  lean: {calibrate: 41, run: 57}
+  full: {calibrate: 153, run: 212}
+
+# Optional fixed assignment (cluster: [conditions]); conditions not listed
+# go to the target. Empty: balanced automatically from the weights.
+assignment: {}
+
+# How often the orchestrator checks the jobs and copies results (seconds;
+# one sacct query per cluster per check; at least 60, by cluster policy).
+poll_seconds: 300
+# A helper's failed share is resubmitted up to this many times; after that
+# (or when the cluster stays unreachable for give_up_hours) its unfinished
+# conditions are left to the target, which computes them when it assembles.
+max_retries: 3
+give_up_hours: 12
+# git pull on a cluster whose checkout is behind the hub's, when its working
+# tree is clean and it has no queued or running jobs of this project.
+auto_pull: true

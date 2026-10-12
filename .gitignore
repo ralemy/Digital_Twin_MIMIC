@@ -41,3 +41,4 @@ run_all/
 # The hook's output now lives in ~/thesis_methodology; never commit a copy here
 conversation_history.md
 
+/multi_runs/

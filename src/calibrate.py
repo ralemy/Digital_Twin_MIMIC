@@ -19,6 +19,14 @@ Resuming: forecasts are checkpointed per batch under
 <checkpoint_dir>/calibration/ and calibration.json is rewritten after each
 finished condition; --full-refresh starts over.
 
+--conditions a,b,... calibrates only those of the config's conditions
+(default: all), with the same checkpoint fingerprints, so one run's
+calibration can be split between clusters (src/multi_cluster.py): each
+cluster calibrates its share, the shares' checkpoint directories
+(<checkpoint_dir>/calibration/conditions/<condition>/) are copied to one
+cluster, and a run of all conditions there loads them and writes the complete
+calibration.json (ensembles included). Without the flag, as before.
+
 Usage:
     python src/calibrate.py --config-file config/config_alliance_lean_tuned.yaml [--grid config/tuning_grid.yaml] [--full-refresh]
 Writes:
@@ -44,7 +52,7 @@ from metrics import interval_coverage, mean_interval_width
 from common import hard_ranges
 from forecasting_agent import postprocess_arrays, postprocess_params
 from pipeline import ensemble_result, ensembles, fit_models, run_condition, validate_conditions
-from run_experiment import load_cohort_and_panel, split_tensors
+from run_experiment import _cfg_to_fit, load_cohort_and_panel, split_tensors
 from tune import DEFAULT_GRID, _digest, config_grid, load_grid, validation_subsets
 
 log = get_logger("calibrate")
@@ -124,9 +132,16 @@ def fit_postprocess(result: dict, obs: np.ndarray, cfg: dict, base: str) -> tupl
     return best, {"smape_config": configured, "smape_fitted": best_score, "y_pred": forecast(best)}
 
 
-def main(config_path: str, grid_path: str | None = None, full_refresh: bool = False) -> None:
+def main(config_path: str, grid_path: str | None = None, full_refresh: bool = False,
+         only: list[str] | None = None) -> None:
     cfg = load_config(config_path)
     validate_conditions(cfg)
+    if only is not None:
+        unknown = [c for c in only if c not in cfg["conditions"]]
+        if unknown:
+            raise ValueError(f"--conditions: {unknown} not in the config's conditions {cfg['conditions']}")
+        log.info("--conditions: calibrating %d of the config's %d conditions: %s",
+                 len(only), len(cfg["conditions"]), ", ".join(only))
     ensure_work_dirs(cfg)
     grid = load_grid(grid_path or config_grid(cfg))
     # A tuned config records the subset it was tuned with; use the same split.
@@ -150,7 +165,7 @@ def main(config_path: str, grid_path: str | None = None, full_refresh: bool = Fa
              "nominal coverage %.0f%%.", len(calib_ids), n_tune, 100 * (1 - alpha))
 
     tracking.start(cfg, "calibrate", config_path, {"n_calibration_patients": len(calib_ids)})
-    fitted = fit_models(cfg, splits["train"], checkpoint=checkpoint)
+    fitted = fit_models(_cfg_to_fit(cfg, only), splits["train"], checkpoint=checkpoint)
     out_path = Path(cfg["paths"]["results_dir"]) / "calibration.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     output = {"alpha": alpha, "n_calibration_patients": len(calib_ids), "config": config_path,
@@ -197,6 +212,8 @@ def main(config_path: str, grid_path: str | None = None, full_refresh: bool = Fa
                                  ("coverage_before", "coverage_after") if c[k] is not None}})
 
     for condition in cfg["conditions"]:
+        if only is not None and condition not in only:
+            continue
         base, variant = split_condition(condition)
         if (base in LLM_CONDITIONS and variant is None and "forecaster" not in fitted) \
                 or (base in ("gbm", "lstm") and base not in fitted):
@@ -250,13 +267,17 @@ def _add_arguments(parser) -> None:
                              f"(default: the config's tuning_grid, else {DEFAULT_GRID})")
     parser.add_argument("--full-refresh", action="store_true",
                         help="delete the calibration checkpoints and start over (default: resume)")
+    parser.add_argument("--conditions", default=None,
+                        help="comma-separated subset of the config's conditions to calibrate (default: all), "
+                             "e.g. to split one run's calibration between clusters")
 
 
 if __name__ == "__main__":
     args = parse_step_args("Split-conformal interval calibration on the validation split.",
                            add_arguments=_add_arguments)
     try:
-        main(args.config_file, args.grid, full_refresh=args.full_refresh)
+        only = [c.strip() for c in args.conditions.split(",") if c.strip()] if args.conditions else None
+        main(args.config_file, args.grid, full_refresh=args.full_refresh, only=only)
     except BaseException:
         tracking.finish(exit_code=1)
         raise
