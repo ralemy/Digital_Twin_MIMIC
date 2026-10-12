@@ -857,6 +857,9 @@ src/evaluate_results.py       step 4 — RQ1/RQ2/RQ3 statistical analysis
 src/select_rq_model.py        choose another model for the RQs (validation data)
 src/pool_runs.py              comparisons pooled over runs (samples) and RQ3 subgroups; spec config/pooled_lean.yaml
 src/lstm_seeds.py             the LSTM baseline re-trained with other seeds on a finished run's patients
+src/offline_runs.py           a finished run's saved calibration/test forecasts, for the offline analyses below
+src/diagnose_coverage.py      why a variable's calibrated intervals under-cover (opt-in alternatives: --mondrian, --by-hour)
+src/rescore_postprocess.py    post-processing refitted per variable group (--strategy) on saved forecasts, written apart
 src/harmonization_agent.py    data-harmonization (ETL) agent
 src/similarity_agent.py       patient-similarity agent (local k-NN)
 src/llm_client.py             local LLM wrapper (Ollama, 127.0.0.1 only)

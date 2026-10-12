@@ -1,0 +1,47 @@
+# =============================================================================
+# config/pooled_lean.yaml with the LLM conditions' post-processing refitted
+# by src/rescore_postprocess.py --strategy vitals_labs --grid extended
+# (one damping/anchor setting for the vital signs, one for lactate, fitted
+# on each run's calibration patients; written to
+# results_tuned/rescored_vitals_labs_extended/). Baselines are unchanged;
+# ensembles are rebuilt from the rescored pipeline and each sample's LSTM.
+# Compare with config/pooled_lean.yaml (the runs' own, shared setting):
+#   python src/pool_runs.py config/pooled_lean_rescored.yaml --root <dir> --json <dir>/pooled_lean_rescored.json
+# =============================================================================
+samples:
+  - name: s42
+    results_dir: tri_lean_exp3.4/mimic-iv-twin-work/results_tuned
+    overrides:
+      lstm: tri_lean_exp3.4_lstm/mimic-iv-twin-work/results_tuned
+      single_model_llm: &r42 tri_lean_exp3.4/mimic-iv-twin-work/results_tuned/rescored_vitals_labs_extended
+      full_pipeline: *r42
+      full_pipeline_no_similarity: *r42
+      full_pipeline@llama3_70b: *r42
+  - name: s43
+    results_dir: tri_lean_exp4/mimic-iv-twin-work/results_tuned
+    overrides:
+      single_model_llm: &r43 tri_lean_exp4/mimic-iv-twin-work/results_tuned/rescored_vitals_labs_extended
+      full_pipeline: *r43
+      full_pipeline_no_similarity: *r43
+      full_pipeline@llama3_70b: *r43
+  - name: s44
+    results_dir: ror_lean_exp5/mimic-iv-twin-work/results_tuned
+    overrides:
+      single_model_llm: &r44 ror_lean_exp5/mimic-iv-twin-work/results_tuned/rescored_vitals_labs_extended
+      full_pipeline: *r44
+      full_pipeline_no_similarity: *r44
+      full_pipeline@llama3_70b: *r44
+
+comparisons:
+  - [full_pipeline, single_model_llm]          # RQ1
+  - [full_pipeline, lstm]
+  - [full_pipeline+lstm, lstm]
+  - [full_pipeline+lstm, full_pipeline]
+  - [full_pipeline, gbm]
+  - [full_pipeline, recent_mean]
+  - [full_pipeline, full_pipeline_no_similarity]
+  - [full_pipeline, full_pipeline@llama3_70b]
+
+bootstrap_resamples: 2000
+bootstrap_alpha: 0.05
+seed: 42
