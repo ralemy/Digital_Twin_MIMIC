@@ -815,7 +815,7 @@ for the vital signs and one for the labs (`vitals_labs`) -0.0014 (better in
 | pipeline - GBM / recent_mean | -0.0049 / -0.0044 | -0.0050 / -0.0045 |
 
 Coverage after calibration is unchanged. The refit helps the single
-models (-0.0004 to -0.0016 test sMAPE) and the pipeline without the
+models (0 to -0.0016 test sMAPE) and the pipeline without the
 similarity agent (-0.0011 to -0.0013), not the full pipelines (-0.0003 to
 +0.0003): the shared setting suited the pipelines and penalised the single
 models, mostly on lactate. About a third of the RQ1 gap came from that, the
