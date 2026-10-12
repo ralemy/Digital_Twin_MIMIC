@@ -20,6 +20,17 @@ rewrites all_conditions_summary.csv after every finished condition.
 after changing prompts or code, which checkpoints can't detect (config or
 cohort changes are detected and stop the run with a message).
 
+--conditions a,b,... runs only those of the config's conditions (default:
+all). Their checkpoints are keyed by the same fingerprints as in a run of all
+conditions, so one run's conditions can be split between clusters: each
+cluster runs its share with the same tuned config, cohort and
+calibration.json, and copying a finished condition's checkpoint directory
+(checkpoints_tuned/run_experiment/conditions/<condition>/) and its
+<condition>_raw.npz / _summary.txt into the other cluster's run makes that
+run load it instead of recomputing it. Ensembles are built only when all
+their members' results are in results_dir. Without the flag, a run does
+everything on one cluster, as before.
+
 Prerequisites:
     1. python src/resolve_items.py --config-file config/config_local.yaml
     2. python src/extract_cohort.py --config-file config/config_local.yaml
@@ -102,10 +113,16 @@ def fitted_postprocess(cfg: dict, results_dir: Path, train_ids) -> dict[str, dic
     return out
 
 
-def main(config_path: str, full_refresh: bool = False) -> None:
+def main(config_path: str, full_refresh: bool = False, only: list[str] | None = None) -> None:
     cfg = load_config(config_path)
     ensure_work_dirs(cfg)
     validate_conditions(cfg)
+    if only is not None:
+        unknown = [c for c in only if c not in cfg["conditions"]]
+        if unknown:
+            raise ValueError(f"--conditions: {unknown} not in the config's conditions {cfg['conditions']}")
+        log.info("--conditions: running %d of the config's %d conditions: %s",
+                 len(only), len(cfg["conditions"]), ", ".join(only))
 
     checkpoint = RunCheckpoint(checkpoint_root(cfg) / "run_experiment")
     if full_refresh:
@@ -122,7 +139,7 @@ def main(config_path: str, full_refresh: bool = False) -> None:
     tensors = build_tensors(cfg, cohort, panel_long)
     splits = split_tensors(tensors, cohort)
 
-    fitted_models = fit_models(cfg, splits["train"], checkpoint=checkpoint)
+    fitted_models = fit_models(_cfg_to_fit(cfg, only), splits["train"], checkpoint=checkpoint)
     train_ids, test_ids = sorted(splits["train"]), sorted(splits["test"])
 
     results_dir = Path(cfg["paths"]["results_dir"])
@@ -131,6 +148,8 @@ def main(config_path: str, full_refresh: bool = False) -> None:
     fitted_pp = fitted_postprocess(cfg, results_dir, train_ids)
 
     for condition in cfg["conditions"]:
+        if only is not None and condition not in only:
+            continue
         base, variant = split_condition(condition)
         needs_llm = base in LLM_CONDITIONS
         if needs_llm and variant is None and "forecaster" not in fitted_models:
@@ -287,6 +306,20 @@ def main(config_path: str, full_refresh: bool = False) -> None:
     log.info("Next step: python src/evaluate_results.py --config-file %s", config_path)
 
 
+def _cfg_to_fit(cfg: dict, only: list[str] | None) -> dict:
+    """The config fit_models builds from: with --conditions, only the
+    baselines and LLM variants those conditions use (nothing that feeds a
+    condition's fingerprint changes)."""
+    if only is None:
+        return cfg
+    bases = {split_condition(c)[0] for c in only}
+    return {**cfg, "conditions": list(only),
+            "baselines": {**cfg["baselines"], "run_gbm": cfg["baselines"]["run_gbm"] and "gbm" in bases,
+                          "run_lstm": cfg["baselines"]["run_lstm"] and "lstm" in bases,
+                          "run_single_model_llm": cfg["baselines"]["run_single_model_llm"]
+                          and "single_model_llm" in only}}
+
+
 def _write_summary(summary_rows: list[dict], results_dir: Path) -> None:
     """(Re)write all_conditions_summary.csv with every condition finished so
     far, in `conditions` order — so partial results survive a stopped run."""
@@ -298,6 +331,11 @@ def _add_arguments(parser) -> None:
         "--full-refresh", action="store_true",
         help="delete all checkpoints of this config's run and start from scratch "
              "(default: resume from them)",
+    )
+    parser.add_argument(
+        "--conditions", default=None,
+        help="comma-separated subset of the config's conditions to run (default: all), "
+             "e.g. to split one run's conditions between clusters",
     )
 
 
@@ -319,7 +357,8 @@ if __name__ == "__main__":
     doc = __doc__ or "Main entry point — Chapter 5, Section 5.5, steps 2-4."
     args = parse_step_args(doc.strip().splitlines()[0], add_arguments=_add_arguments)
     try:
-        main(args.config_file, full_refresh=args.full_refresh)
+        only = [c.strip() for c in args.conditions.split(",") if c.strip()] if args.conditions else None
+        main(args.config_file, full_refresh=args.full_refresh, only=only)
     except BaseException:
         tracking.finish(exit_code=1)
         raise

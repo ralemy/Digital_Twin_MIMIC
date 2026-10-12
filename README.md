@@ -569,6 +569,31 @@ settings are not reused — the tuning cache simply recomputes them. Other
 code changes, including edits to the prompt text in `src/`, are **not**
 detected — use `--full-refresh` after those.
 
+### Optional: split step 3 between clusters
+
+By default one cluster runs every condition. To finish sooner, a second
+cluster can take some of them: `--conditions a,b,...` (after the config)
+runs only those of the config's conditions, with the same checkpoint
+fingerprints as a run of all of them.
+
+1. Give the second cluster the first one's tuned config (same path under
+   `tuned_configs/<run>/`), its `cohort.parquet`, `panel_long.parquet` and
+   `cache/`, and `results_tuned/calibration.json`. The config's paths use
+   `$DT_RESULTS_DIR`, so they resolve on either cluster.
+2. There, run the tail of the condition list, which the first cluster
+   reaches last:
+   `bash jobs/submit.sh jobs/step3_run_experiment.sh $TUNED --conditions full_pipeline@llama3_70b,...`
+3. As each condition finishes there, copy its checkpoint directory
+   (`checkpoints_tuned/run_experiment/conditions/<condition>/`) and its
+   `results_tuned/<condition>_raw.npz` and `_summary.txt` into the first
+   cluster's run, before that run reaches the condition (copy into a temporary
+   name and `mv` it into place). The first cluster's step 3 then loads it
+   instead of recomputing it; a fingerprint that differs stops that job with
+   a message rather than mixing results, so check that both clusters run the
+   same code and config. Ensembles and step 4 run on the first cluster.
+
+Record in the run's notes which conditions ran where.
+
 ### The full variable set
 
 The steps are identical with `CONFIG=config/config_alliance_full.yaml`,
