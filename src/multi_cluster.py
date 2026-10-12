@@ -6,10 +6,19 @@ the jobs through each cluster's jobs/submit.sh, polls Slurm (one sacct query
 per cluster per check), and copies finished work between clusters through the
 hub. Without it, jobs/run_all.sh runs everything on one cluster, as before.
 
+Assumed on every cluster (checked, not installed, before anything is
+submitted): the repo is set up with jobs/setup_bash.sh, so the profile
+(~/.config/dt_profile.yml, read through jobs/load_profile.sh as the jobs read
+it) gives its locations; the Ollama models the cluster's share uses are in
+$OLLAMA_MODELS (the target: every model of the run, since it computes any
+condition a helper does not deliver); and, on the target, the repo's mimic-iv
+link resolves to MIMIC-IV. Helpers never read MIMIC-IV: they get the target's
+extracted cohort. A missing item is reported at every check until it is fixed.
+
 Sequence (each step starts only when the previous one is complete, whatever
 order the clusters finish in):
   1. prepare: on the target, jobs/run_all.sh <scope> --until tune (models,
-     resolve, extract, tune); on each helper, run_all.sh --until models.
+     resolve, extract, tune).
   2. inputs: the target's cohort.parquet, panel_long.parquet, cache/ and
      tuned config are copied to each helper; every condition's calibration
      fingerprint is computed on each cluster and must match.
@@ -35,11 +44,13 @@ multi_runs/<run>/state.json (log: multi.log), so the orchestrator can be
 stopped and started again at any time; the jobs keep running meanwhile.
 
 Usage (on the hub, from the repository base):
-    python src/multi_cluster.py plan   --multi config/multi_cluster.yaml <lean|full> --run-name <run> [--config <base config>]
-    python src/multi_cluster.py start  --multi config/multi_cluster.yaml <lean|full> --run-name <run> [--config <base config>]
+    python src/multi_cluster.py plan   <lean|full> --run-name <run> [--target fir --helpers trillium,rorqual] [--config <base config>] [--multi config/multi_cluster.yaml]
+    python src/multi_cluster.py start  <lean|full> --run-name <run> [--target fir --helpers trillium,rorqual] [--config <base config>] [--multi ...]
     python src/multi_cluster.py status <run>
     python src/multi_cluster.py stop   <run>
-(run instead of start stays in the foreground.)
+(run instead of start stays in the foreground.) --target and --helpers
+override the multi-cluster file's target and helpers (each must be under its
+clusters:); a run keeps the ones it started with.
 """
 from __future__ import annotations
 
@@ -214,6 +225,40 @@ def remote_info(config: str, stage: str | None, paths_only: bool) -> dict:
     return out
 
 
+def manifest_path(models_dir: str, name: str) -> Path:
+    """Where Ollama keeps a model's manifest: hf.co/<user>/<repo>:<tag> under
+    manifests/hf.co/<user>/<repo>/<tag>, a library name (or an alias made
+    with ollama cp) under manifests/registry.ollama.ai/library/<name>/<tag>."""
+    repo, _, tag = name.partition(":")
+    tag = tag or "latest"
+    if repo.startswith("hf.co/"):
+        return Path(models_dir) / "manifests" / repo / tag
+    host_path = repo if "/" in repo else f"library/{repo}"
+    return Path(models_dir) / "manifests" / "registry.ollama.ai" / host_path / tag
+
+
+def remote_check(config: str, conditions: list[str], mimic: bool) -> dict:
+    """Run on a cluster: are the models for these conditions present, and
+    (mimic) does the repo's mimic-iv link resolve to MIMIC-IV?"""
+    sys.path.insert(0, str(REPO / "src"))
+    from common import llm_models_in_use, load_config, split_condition
+    cfg = load_config(config)
+    bases = {split_condition(c)[0] for c in conditions}
+    sub_cfg = {**cfg, "conditions": list(conditions),
+               "baselines": {**cfg["baselines"], "run_single_model_llm": "single_model_llm" in conditions}}
+    models_dir = os.environ.get("OLLAMA_MODELS") or os.environ.get("DT_OLLAMA_MODELS") or ""
+    models = llm_models_in_use(sub_cfg) if bases else []
+    out = {"models_dir": models_dir, "missing_models": [m for m in models if not models_dir
+                                                         or not manifest_path(models_dir, m).exists()]}
+    if mimic:
+        root = REPO / "mimic-iv"
+        need = [("icu", "d_items"), ("icu", "chartevents"), ("hosp", "labevents"), ("hosp", "d_labitems")]
+        out["mimic_missing"] = [f"{d}/{n}.csv[.gz]" for d, n in need
+                                if not ((root / d / f"{n}.csv.gz").exists() or (root / d / f"{n}.csv").exists())]
+        out["mimic_dir"] = str(root.resolve())
+    return out
+
+
 def finished_script(ckroot: str, results_dir: str, stage: str, expected: dict, n_batches: int,
                     conditions: list[str]) -> str:
     """Shell that prints each of these conditions whose checkpoint here is
@@ -255,10 +300,9 @@ class Orchestrator:
         tmp.write_text(json.dumps(self.s, indent=2))
         tmp.replace(self.state_path)
 
-    def init(self, scope: str, base_config: str, multi_path: str) -> None:
+    def init(self, scope: str, base_config: str, multi_path: str, multi: dict) -> None:
         sys.path.insert(0, str(REPO / "src"))
         from common import load_config
-        multi = yaml.safe_load(open(multi_path))
         cfg = load_config(base_config)
         tuned = f"tuned_configs/{self.run_name}/{Path(base_config).stem}_tuned.yaml"
         self.s = {"run": self.run_name, "scope": scope, "base_config": base_config, "multi": multi,
@@ -386,7 +430,34 @@ class Orchestrator:
                     self.log(f"{name}: checkout {head[:7]} differs from the hub's {hub_head[:7]} "
                              f"(local changes: {dirty}, queued/running project jobs: {jobs}) — pull there, then this continues")
                     return False
+            if not results or not logs:
+                self.log(f"{name}: profile gives no DT_RESULTS_DIR/DT_LOGS_ROOT — run jobs/setup_bash.sh there")
+                return False
             self.s["env"][name] = {"repo": repo, "results": results, "logs": logs, "head": head}
+        problems = []
+        for name in [self.target] + self.helpers:
+            # the target may have to compute any condition: it needs every model
+            conds = self.cfg()["conditions"] if name == self.target else (self.s["assignment"].get(name) or [])
+            if not conds and name != self.target:
+                continue
+            flag = " --mimic" if name == self.target else ""
+            r = self.sh(name, PYENV + f"python src/multi_cluster.py remote-check {q(self.s['base_config'])} "
+                                      f"--conditions {q(','.join(conds))}{flag} 2>/dev/null", timeout=600)
+            try:
+                chk = json.loads(r.stdout.strip().splitlines()[-1])
+            except (IndexError, json.JSONDecodeError):
+                problems.append(f"{name}: could not check its models (rc {r.returncode}) {r.stderr.strip()[-200:]}")
+                continue
+            if chk["missing_models"]:
+                problems.append(f"{name}: models missing from {chk['models_dir'] or '$OLLAMA_MODELS (not set)'}: "
+                                f"{chk['missing_models']} (jobs/prep2_download_models.sh there)")
+            if chk.get("mimic_missing"):
+                problems.append(f"{name}: the repo's mimic-iv link ({chk['mimic_dir']}) lacks {chk['mimic_missing']} "
+                                f"— point it at MIMIC-IV (paths.mimic_dir in the profile, then jobs/setup_bash.sh)")
+        if problems:
+            for msg in problems:
+                self.log(msg)
+            return False
         self.event(f"preflight: all clusters at {hub_head[:7]}; assignment " +
                    "; ".join(f"{c}: {len(v)}" for c, v in self.s["assignment"].items()))
         return True
@@ -408,7 +479,7 @@ class Orchestrator:
 
     def prepare(self) -> bool:
         prep = self.s.setdefault("prepare", {})
-        todo = {self.target: "tune", **{h: "models" for h in self.helpers}}
+        todo = {self.target: "tune"}       # helpers need nothing before step 2 (checked in preflight)
         done = True
         for name, until in todo.items():
             p = prep.setdefault(name, {"started": False, "restarts": 0, "done": False})
@@ -763,6 +834,13 @@ def main() -> None:
         p.add_argument("--run-name", required=True)
         p.add_argument("--multi", default="config/multi_cluster.yaml")
         p.add_argument("--config", default=None, help="base config (default: the scope's standard one)")
+        p.add_argument("--target", default=None, help="the cluster that holds the run (overrides the multi file)")
+        p.add_argument("--helpers", default=None,
+                       help="comma-separated helper clusters (overrides the multi file; '' for none)")
+    p = sub.add_parser("remote-check", help=argparse.SUPPRESS)
+    p.add_argument("config")
+    p.add_argument("--conditions", default="")
+    p.add_argument("--mimic", action="store_true")
     for name in ("status", "stop"):
         p = sub.add_parser(name)
         p.add_argument("run_name")
@@ -776,6 +854,10 @@ def main() -> None:
 
     if args.cmd == "remote-info":
         print(json.dumps(remote_info(args.config, args.stage, args.paths_only)))
+        return
+    if args.cmd == "remote-check":
+        conds = [c for c in args.conditions.split(",") if c]
+        print(json.dumps(remote_check(args.config, conds, args.mimic)))
         return
     if args.cmd in ("status", "stop"):
         d = REPO / "multi_runs" / args.run_name
@@ -810,6 +892,12 @@ def main() -> None:
     from common import load_config
     base = args.config or STANDARD_CONFIG[args.scope]
     multi = yaml.safe_load(open(args.multi))
+    if args.target:
+        multi["target"] = args.target
+    if args.helpers is not None:
+        multi["helpers"] = [h for h in args.helpers.split(",") if h]
+    if multi["target"] in (multi.get("helpers") or []):
+        sys.exit(f"cluster '{multi['target']}' is both the target and a helper")
     for c in [multi["target"]] + list(multi.get("helpers") or []):
         if c not in multi["clusters"]:
             sys.exit(f"cluster '{c}' is not under clusters: in {args.multi}")
@@ -820,17 +908,22 @@ def main() -> None:
     d = REPO / "multi_runs" / args.run_name
     o = Orchestrator(args.run_name, d)
     if o.s is None:
-        o.init(args.scope, base, args.multi)
+        o.init(args.scope, base, args.multi, multi)
         print_plan(cfg, multi, args.scope)
     elif (o.s["scope"], o.s["base_config"]) != (args.scope, base):
         sys.exit(f"run '{args.run_name}' was started as {o.s['scope']} with {o.s['base_config']}")
+    elif (args.target and args.target != o.target) or \
+            (args.helpers is not None and multi["helpers"] != o.helpers):
+        sys.exit(f"run '{args.run_name}' was started with target {o.target} and helpers {o.helpers}; "
+                 f"a run keeps them (start a new run name to change them)")
     pid_file = d / "orchestrator.pid"
     if pid_file.exists() and Path(f"/proc/{int(pid_file.read_text())}").exists():
         sys.exit(f"an orchestrator for '{args.run_name}' is already running (pid {pid_file.read_text()})")
     if args.cmd == "start":
         log = open(d / "multi.log", "a")
         p = subprocess.Popen([sys.executable, str(REPO / "src/multi_cluster.py"), "run", args.scope,
-                              "--run-name", args.run_name, "--multi", args.multi, "--config", base],
+                              "--run-name", args.run_name, "--multi", args.multi, "--config", base,
+                              "--target", o.target, "--helpers", ",".join(o.helpers)],
                              cwd=REPO, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
         print(f"orchestrator started (pid {p.pid}); log {d / 'multi.log'}; "
               f"python src/multi_cluster.py status {args.run_name}")
