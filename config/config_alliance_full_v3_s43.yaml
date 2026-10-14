@@ -1,0 +1,352 @@
+# =============================================================================
+# FULL SCOPE, THIRD DESIGN (full_v3), sample seed 43 — one of three
+# independent replications run side by side in October 2026, one per cluster:
+#   config_alliance_full_v3_s43.yaml   Fir       fir_full_oct13
+#   config_alliance_full_v3_s44.yaml   Rorqual   ror_full_oct13
+#   config_alliance_full_v3_s45.yaml   Trillium  tri_full_oct13
+# The three files differ only in cohort.random_seed (and this line), so each
+# run draws its own 3000 stays from the ~11,800 eligible ones and its own
+# train/val/calibration/test split. Run with:
+#   bash jobs/run_all.sh full --config config/config_alliance_full_v3_s43.yaml --run-name <run> --unattended
+#
+# Differences from config_alliance_full.yaml (fir_full_v2), from its results
+# (docs/evaluation.md §8):
+#   - prompt settings fixed, no LLM tuning stage (tuning_grid_none.yaml):
+#     fir_full_v2's tuned ones (similarity_context trajectory, single model
+#     trend_hint none), except that the pipeline group uses trend_hint
+#     damped: fir_full_v2's tuning scored it 0.1101 vs 0.1121 for slope
+#     (just under the 0.002 threshold), and exp4/exp5 both chose it.
+#   - 5 LLM conditions instead of 16: Med42 single model, pipeline and
+#     pipeline without similarity (RQ1, RQ3, similarity ablation), and
+#     Llama-3-70B single model and pipeline (the best model there). No
+#     critic ablation: RQ2 was settled by four runs (no accuracy effect), so
+#     evaluation skips RQ2 here.
+#   - new cohort seed (see above); fir_full_v2's test patients were seen
+#     when these changes were chosen.
+# Two further changes are applied after the run, without LLM time: post-
+# processing fitted separately for vitals and labs (src/rescore_postprocess.py
+# --strategy vitals_labs --grid extended, docs/evaluation.md §8.2) and an
+# LSTM fixed for the 19-variable panel (LSTM-only rerun). The run itself
+# keeps the current calibrate.py and LSTM, so both versions are reported.
+#
+# Everything else is config_alliance_full.yaml; its header (approvals: the
+# 19-variable panel amendment is approved, CPU/RAM, Ollama) applies here too.
+# =============================================================================
+
+# mimic-iv is the repo's symlink to $DT_MIMIC_DIR; $DT_RESULTS_DIR is set in
+# your profile (paths.results_dir), via jobs/setup_bash.sh.
+paths:
+  mimic_root: "mimic-iv"
+  work_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full"
+  cache_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full/cache"
+  results_dir: "$DT_RESULTS_DIR/mimic-iv-twin-work-full/results"
+
+performance:
+  duckdb_threads: 10
+  duckdb_memory_limit_gb: 120      # leaves ~80 GB of step 2's 192000M Slurm allocation for pandas/Python; DuckDB spills to $SLURM_TMPDIR past this
+  llm_max_concurrent_requests: 8   # requests the pipeline sends at once; the GPU jobs also start Ollama with OLLAMA_NUM_PARALLEL = this (jobs/ollama_lib.sh). 8 + flash attention: 1.69x the speed of 4 without, same fallbacks/sMAPE (benchmark job 23198298)
+  ollama_flash_attention: true     # OLLAMA_FLASH_ATTENTION for the jobs' Ollama server (benchmarked in job 23198298)
+  batch_predict_baselines: true
+  # run_experiment.py checkpoints each condition every this many test
+  # patients, so a run stopped by the Slurm time limit loses at most one
+  # batch when resubmitted. Smaller = less lost work, more small files.
+  # The step 3 log prints the time per batch for LLM conditions — use it to
+  # size this and the job's --time.
+  checkpoint_batch_size: 32
+
+cohort:
+  min_age_years: 18
+  min_icu_stay_hours: 48
+  first_stay_only: true
+  # 19 variables means a patient needs 50% coverage across a much larger
+  # panel to be included — more of the cohort fails this filter than under
+  # the 5-variable panel, where broad availability was one of the selection
+  # criteria (Section 5.3/5.4). Expect fewer than 3000 eligible patients
+  # before max_patients even applies.
+  min_panel_coverage: 0.5
+  # Pooled over all 19 variables, 50% passed 21 / 36132 stays (Fir run
+  # fir_full_tune): labs are drawn once or twice a day, capping coverage
+  # near 39%. vitals_plus_labs applies min_panel_coverage to the hourly
+  # chartevents vitals and requires each lab at least once in the
+  # observation window. "all" (the default) is the pooled rule.
+  coverage_rule: vitals_plus_labs
+  observation_window_hours: 24
+  forecast_horizon_hours: 24
+  resample_freq_minutes: 60
+  train_frac: 0.7
+  val_frac: 0.15
+  test_frac: 0.15
+  random_seed: 43                 # 43 Fir, 44 Rorqual, 45 Trillium (header)
+  max_patients: 3000
+
+# Each variable may also set valid_range: [lo, hi] — raw values outside it
+# are charting artefacts and are dropped at extraction and when the tensors
+# are built (MAP 79104, SpO2 10099, heart rate 0 were in the Trillium lean
+# panel). Default: the variable's plausible_range.
+variables:
+  - name: heart_rate
+    source: icu_chartevents
+    label_patterns: ["Heart Rate"]
+    exclude_patterns: ["Alarm"]                 # drops "Heart rate Alarm - High/Low" (alarm thresholds, not measurements)
+    plausible_range: [20, 250]
+    unit: "bpm"
+  - name: resp_rate
+    source: icu_chartevents
+    label_patterns: ["Respiratory Rate"]
+    exclude_patterns: ["Set", "Spontaneous", "Total"]
+    plausible_range: [4, 60]
+    unit: "breaths/min"
+  - name: spo2
+    source: icu_chartevents
+    label_patterns: ["O2 saturation pulseoxymetry", "SpO2"]
+    exclude_patterns: ["Alarm", "Limit", "Sensor"]   # drops SpO2 alarm thresholds, "SpO2 Desat Limit", sensor-placement checkbox
+    plausible_range: [50, 100]
+    hard_range: [0, 100]                        # physically possible; every LLM forecast is clipped to it
+    unit: "%"
+  - name: map
+    source: icu_chartevents
+    label_patterns: ["Arterial Blood Pressure mean", "Non Invasive Blood Pressure mean", "ART BP Mean"]
+    plausible_range: [20, 180]
+    unit: "mmHg"
+  - name: lactate
+    source: hosp_labevents
+    label_patterns: ["Lactate"]
+    exclude_patterns: ["Dehydrogenase"]         # "Lactate" also matches lactate dehydrogenase (LDH), a different test
+    fluids: ["Blood"]
+    plausible_range: [0.1, 30]
+    unit: "mmol/L"
+  # --- added vitals (icu/chartevents) ---
+  - name: sbp
+    source: icu_chartevents
+    label_patterns: ["Non Invasive Blood Pressure systolic", "Arterial Blood Pressure systolic", "ART BP Systolic"]
+    plausible_range: [40, 250]
+    unit: "mmHg"
+  - name: dbp
+    source: icu_chartevents
+    label_patterns: ["Non Invasive Blood Pressure diastolic", "Arterial Blood Pressure diastolic", "ART BP Diastolic"]
+    plausible_range: [20, 150]
+    unit: "mmHg"
+  - name: temperature
+    source: icu_chartevents
+    label_patterns: ["Temperature Fahrenheit"]
+    plausible_range: [86, 110]
+    unit: "°F"
+  # --- added labs (hosp/labevents) ---
+  - name: creatinine
+    source: hosp_labevents
+    label_patterns: ["Creatinine"]
+    fluids: ["Blood"]
+    plausible_range: [0.1, 20]
+    unit: "mg/dL"
+  - name: bun
+    source: hosp_labevents
+    label_patterns: ["Urea Nitrogen"]
+    fluids: ["Blood"]
+    plausible_range: [1, 200]
+    unit: "mg/dL"
+  - name: sodium
+    source: hosp_labevents
+    label_patterns: ["Sodium"]
+    fluids: ["Blood"]
+    plausible_range: [100, 180]
+    unit: "mEq/L"
+  - name: potassium
+    source: hosp_labevents
+    label_patterns: ["Potassium"]
+    fluids: ["Blood"]
+    plausible_range: [1.5, 9]
+    unit: "mEq/L"
+  - name: wbc
+    source: hosp_labevents
+    label_patterns: ["White Blood Cells"]
+    plausible_range: [0.1, 100]
+    unit: "K/uL"
+  - name: platelet
+    source: hosp_labevents
+    label_patterns: ["Platelet Count"]
+    plausible_range: [1, 1200]
+    unit: "K/uL"
+  - name: hemoglobin
+    source: hosp_labevents
+    label_patterns: ["Hemoglobin"]
+    match: exact                               # substring match picks up Carboxy-/Met-hemoglobin, Hb A1c, fetal Hb, ...
+    fluids: ["Blood"]
+    plausible_range: [2, 22]
+    unit: "g/dL"
+  - name: bicarbonate
+    source: hosp_labevents
+    label_patterns: ["Bicarbonate"]
+    fluids: ["Blood"]
+    plausible_range: [5, 50]
+    unit: "mEq/L"
+  - name: glucose
+    source: hosp_labevents
+    label_patterns: ["Glucose"]
+    fluids: ["Blood"]
+    plausible_range: [10, 1000]
+    unit: "mg/dL"
+  - name: bilirubin_total
+    source: hosp_labevents
+    label_patterns: ["Bilirubin, Total"]
+    fluids: ["Blood"]
+    plausible_range: [0.1, 50]
+    unit: "mg/dL"
+  - name: ph
+    source: hosp_labevents
+    label_patterns: ["pH"]
+    match: exact                               # "pH" as a substring matches ~130 labels (Phosphate, Lymphocytes, ...)
+    fluids: ["Blood"]
+    plausible_range: [6.8, 7.8]
+    unit: ""
+
+deterioration_labels:
+  vasopressor_itemid_labels: ["Norepinephrine", "Epinephrine", "Vasopressin", "Phenylephrine", "Dopamine"]
+  lookahead_hours: 24
+
+llm:
+  backend: "ollama"
+  ollama_host: "http://127.0.0.1:11434"
+  # Primary model since tri_lean_exp2: M42 Health's Llama3-Med42-70B
+  # (Med42-v2, clinical fine-tune of Llama 3 70B), community GGUF conversion;
+  # fits fully onto one H100. Its full pipeline was the most accurate LLM
+  # condition there; Qwen2.5-32B, the primary of the first two runs, is now
+  # the qwen2_5_32b variant.
+  model: "hf.co/mradermacher/Llama3-Med42-70B-GGUF:Q4_K_M"   # ~42.5GB
+  alias: "med42:70b"
+  temperature: 0.2
+  max_tokens: 4096   # JSON for 19 variables x 24 h is ~2,500-3,500 tokens; 1800 would truncate every forecast
+  request_timeout_s: 600   # a 19-variable forecast takes ~2-2.5 min at the median (~3.7x the lean one); the lean tail reached 4x the median
+  num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
+  # Comparison model (the best LLM in fir_full_v2): Llama 3 70B, Med42's
+  # base model. The other variants are in config_alliance_full.yaml.
+  variants:
+    llama3_70b:
+      # Llama 3 70B Instruct: Med42's base model (Meta Llama 3 Community Licence).
+      model: "llama3:70b-instruct-q4_K_M"                       # ~43GB
+      num_ctx: 8192     # Llama 3's trained context; the 19-variable prompt + 4096-token answer fits
+
+# Forecasting prompt and output (src/forecasting_agent.py). trend_hint and
+# cohort_anchor are tuned by src/tune.py (config/tuning_grid.yaml) from their
+# defaults (slope, false).
+forecasting_agent:
+  # Post-processing (pipeline.py, after the LLM, before the critic): the
+  # forecast's hour 1 moved a share level_anchor_weight of the way to the mean
+  # of the last level_window_hours observed hours, then each hour's change
+  # from hour 1 times drift_damping. With fit_postprocess, calibrate.py fits
+  # both per condition on the calibration patients from the saved forecasts
+  # (no extra LLM calls) and run_experiment.py applies the fitted values; the
+  # values here are the starting point, used by tune.py.
+  # tri_lean_exp2: tuning chose drift_damping 0.25 (0.5 and 0 within 0.002).
+  drift_damping: 0.25
+  level_anchor_weight: 0.0
+  level_window_hours: 6
+  fit_postprocess: true
+  # Interval half-widths the model gives: endpoints = one at the first and
+  # one at the last hour, interpolated, so intervals can widen with lead time
+  # for ~10 more output numbers; per_hour = all 24 per variable (about 60%
+  # more output tokens, so longer jobs); constant = one number per variable
+  # (the original prompt; its 90% intervals covered 16-39% on Trillium).
+  interval: endpoints
+  # Fixed (no tuning stage): fir_full_v2's tuned settings, except the
+  # pipeline group's trend_hint (damped instead of the default slope; header).
+  similarity_context: trajectory
+  per_condition:
+    single_model_llm:
+      trend_hint: none
+    full_pipeline:
+      trend_hint: damped
+
+similarity_agent:
+  k_neighbors: 30
+  feature_hours: 24
+
+critic_agent:
+  enabled: true
+  max_correction_attempts: 1
+
+baselines:
+  run_naive: true
+  run_gbm: true
+  run_lstm: true
+  run_single_model_llm: true
+  lstm_hidden_size: 128
+  lstm_epochs: 200
+  lstm_checkpoint_every_epochs: 20   # LSTM training checkpoint interval (resume after a stop)
+  # What the LSTM sees for unmeasured hours (baselines.LSTMBaseline):
+  # ffill_mask = last measured value carried forward + a measured/not
+  # channel per variable, as GBM gets from its last-value features;
+  # zero_fill (the default, all runs up to tri_lean_exp4) = the cohort mean.
+  # fir_full_v2 tuning with zero_fill: LSTM 0.140 vs GBM 0.109 (14 labs).
+  lstm_input: ffill_mask
+  lstm_seed: 42                    # fir_full_v2's tuned value (tuning_grid_none.yaml fixes it too)
+
+conditions:
+  - naive
+  - recent_mean
+  - persistence_blend
+  - gbm
+  - lstm
+  # Primary model (llm.model, Med42-70B): RQ1, RQ3 and the similarity
+  # ablation (no critic ablation here; header).
+  - single_model_llm
+  - full_pipeline
+  - full_pipeline_no_similarity
+  # Comparison model, grouped so Ollama loads it once.
+  - single_model_llm@llama3_70b
+  - full_pipeline@llama3_70b
+
+# Ensembles (pipeline.ensembles): the mean of the members' forecasts and
+# interval half-widths, built after the members at no GPU cost.
+# tri_lean_exp2: Med42's full pipeline averaged with the LSTM beat the LSTM
+# alone (per-patient sMAPE 0.1075 vs 0.1094, p = 0.0008).
+ensembles:
+  - [full_pipeline, lstm]
+
+evaluation:
+  bootstrap_resamples: 2000
+  bootstrap_alpha: 0.05
+  interval_width_pct: 90
+  # Models whose RQ1-RQ3 analysis is reported: "primary" (llm.model, the
+  # pre-specified analysis) plus any LLM variant chosen on validation data
+  # by src/select_rq_model.py (it adds the variant here with --write-config,
+  # together with the conditions RQ2 needs, e.g. full_pipeline_no_critic@<v>).
+  rq_models: [primary]
+  # Extra paired comparisons [A, B] (A - B per-patient sMAPE, as for the
+  # RQs) in statistical_analysis.json under extra_comparisons.
+  extra_comparisons:
+    # Does the similarity context help (with the damped hint)?
+    - [full_pipeline, full_pipeline_no_similarity]
+    # RQ1 on the comparison model, and the two pipelines head to head.
+    - [full_pipeline@llama3_70b, single_model_llm@llama3_70b]
+    - [full_pipeline@llama3_70b, full_pipeline]
+    # Does the primary pipeline beat stronger persistence, and does the
+    # ensemble beat each of its members?
+    - [full_pipeline, recent_mean]
+    - [full_pipeline, persistence_blend]
+    # Does it beat the classic models?
+    - [full_pipeline, lstm]
+    - [full_pipeline, gbm]
+    - [full_pipeline+lstm, lstm]
+    - [full_pipeline+lstm, full_pipeline]
+
+logging:
+  # Live aggregate metrics on Weights & Biases (src/tracking.py): progress,
+  # rates, per-condition metrics, tuning scores, and the job's CPU/GPU
+  # usage. Never log lines, model output or per-patient values; errors are
+  # sent only as a type ("malformed forecast - see logs for details").
+  # One-time setup on a login node: `wandb login`. Without it, or with
+  # enabled: false, runs proceed without tracking.
+  wandb:
+    enabled: true
+    project: mimic-iv-digital-twin
+    entity: null      # your default W&B account
+    mode: online      # offline: write locally, `wandb sync` later
+
+# No tuning rounds: the prompt settings are fixed above.
+tuning_grid: config/tuning_grid_none.yaml
+
+# jobs/run_all.sh: work estimates (minutes) for 5 70B conditions at the full
+# scope (~212 min each on 450 test patients, ~153 on 322 calibration
+# patients; config/multi_cluster.yaml) plus the baselines.
+run_all:
+  estimates_min: {tune: 30, calibrate: 800, run: 1150}
