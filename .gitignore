@@ -10,7 +10,7 @@ __pycache__/
 /mimic-iv-twin-work
 /mimic-iv-twin-work-full
 /ollama-models
-
+*.tar
 # jobs/setup_bash.sh's log and lock
 /setup.lock
 /setup-failed-*.log
