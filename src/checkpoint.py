@@ -89,7 +89,7 @@ def model_fingerprint(cfg: dict, model: str, train_ids) -> dict:
           "train_ids": _ids_hash(train_ids), "data": DATA_VERSION}
     if model == "lstm":
         fp["lstm"] = {k: cfg["baselines"].get(k) for k in ("lstm_hidden_size", "lstm_epochs")}
-        fp["lstm"].update(_set_keys(cfg["baselines"], ("lstm_learning_rate", "lstm_seed", "lstm_input")))
+        fp["lstm"].update(_set_keys(cfg["baselines"], ("lstm_learning_rate", "lstm_seed", "lstm_input", "lstm_target")))
     if model == "gbm":
         extra = _set_keys(cfg["baselines"], ("gbm_max_depth", "gbm_max_iter", "gbm_learning_rate"))
         if extra:

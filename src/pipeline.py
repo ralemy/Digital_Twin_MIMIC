@@ -463,7 +463,8 @@ def fit_models(cfg: dict, train_tensors: dict[int, dict], checkpoint: RunCheckpo
         lstm_epochs = cfg["baselines"].get("lstm_epochs", 100)
         lstm_path = checkpoint.model_path("lstm", model_fingerprint(cfg, "lstm", train_tensors), "lstm.pt") if checkpoint else None
         fitted["lstm"] = LSTMBaseline(variables, horizon_hours, hidden=lstm_hidden,
-                                      input_mode=cfg["baselines"].get("lstm_input", "zero_fill")).fit(
+                                      input_mode=cfg["baselines"].get("lstm_input", "zero_fill"),
+                                      target=cfg["baselines"].get("lstm_target", "level")).fit(
             train_tensors, epochs=lstm_epochs, lr=cfg["baselines"].get("lstm_learning_rate", 1e-3),
             checkpoint_path=lstm_path,
             checkpoint_every=cfg["baselines"].get("lstm_checkpoint_every_epochs", 20),

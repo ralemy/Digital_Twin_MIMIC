@@ -200,20 +200,24 @@ if _TORCH_AVAILABLE:
             self.horizon_hours = horizon_hours
             self.n_vars = n_vars
 
-        def forward(self, obs: torch.Tensor) -> torch.Tensor: # type: ignore
+        def forward(self, obs: torch.Tensor, anchor: torch.Tensor | None = None) -> torch.Tensor: # type: ignore
+            """anchor (batch, 1, n_vars), with lstm_target delta: each
+            variable's last measured value; the head then predicts the change
+            from it, and the decoder is fed the anchored forecast."""
             _, (h, c) = self.encoder(obs)
             # teacher-forcing-free autoregressive decode, seeded with the last observed step
-            dec_input = obs[:, -1:, :self.n_vars]
+            dec_input = obs[:, -1:, :self.n_vars] if anchor is None else anchor
             outputs = []
             for _ in range(self.horizon_hours):
                 out, (h, c) = self.decoder(dec_input, (h, c))
-                pred = self.head(out)
+                pred = self.head(out) if anchor is None else anchor + self.head(out)
                 outputs.append(pred)
                 dec_input = pred
             return torch.cat(outputs, dim=1)  # (batch, horizon_hours, n_vars)
 
 
 LSTM_INPUTS = ("zero_fill", "ffill_mask")
+LSTM_TARGETS = ("level", "delta")
 
 
 class LSTMBaseline:
@@ -225,10 +229,19 @@ class LSTMBaseline:
       ffill_mask: each variable's last measured value carried forward (0
                  before its first measurement), plus a 0/1 channel per
                  variable saying whether it was measured that hour — what GBM
-                 gets from its last-value features."""
+                 gets from its last-value features.
+
+    baselines.lstm_target, what the decoder predicts:
+      level (default): each hour's (normalised) value. At the full scope (14
+                 sparse labs) 200 full-batch epochs leave it worse than naive:
+                 it never learns to carry a lab's last value forward
+                 (fir_full_v2: bilirubin 0.78 vs naive 0.23).
+      delta:     the change from each variable's last measured value (the
+                 cohort mean if never measured), so an untrained head is the
+                 naive forecast and training learns the correction."""
 
     def __init__(self, variables: list[str], horizon_hours: int, device: str | None = None, hidden: int = 64,
-                 input_mode: str = "zero_fill"):
+                 input_mode: str = "zero_fill", target: str = "level"):
         if not _TORCH_AVAILABLE:
             raise ImportError(
                 "LSTMBaseline requires PyTorch. Install it with `pip install torch` "
@@ -237,9 +250,12 @@ class LSTMBaseline:
             )
         if input_mode not in LSTM_INPUTS:
             raise ValueError(f"baselines.lstm_input must be one of {LSTM_INPUTS}, not {input_mode!r}")
+        if target not in LSTM_TARGETS:
+            raise ValueError(f"baselines.lstm_target must be one of {LSTM_TARGETS}, not {target!r}")
         self.variables = variables
         self.horizon_hours = horizon_hours
         self.input_mode = input_mode
+        self.target = target
         self.n_inputs = len(variables) * (2 if input_mode == "ffill_mask" else 1)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = _Seq2SeqLSTM(len(variables), hidden=hidden, horizon_hours=horizon_hours,
@@ -264,6 +280,18 @@ class LSTMBaseline:
         filled = np.take_along_axis(x, last, axis=1)                        # NaN before the first one
         return np.concatenate([np.nan_to_num(filled, nan=0.0), measured.astype(float)], axis=2)
 
+    def _anchor(self, obs_stack: np.ndarray) -> torch.Tensor | None: # type: ignore
+        """(patients, 1, variables) normalised last measured values for
+        lstm_target delta (0, the cohort mean, if never measured); None for level."""
+        if self.target == "level":
+            return None
+        x = (obs_stack - self._norm_mean) / self._norm_std
+        measured = ~np.isnan(x)
+        hours = np.arange(x.shape[1])[None, :, None]
+        last = np.maximum.accumulate(np.where(measured, hours, 0), axis=1)[:, -1:, :]
+        values = np.nan_to_num(np.take_along_axis(x, last, axis=1), nan=0.0)
+        return torch.tensor(values, dtype=torch.float32).to(self.device)
+
     def fit(self, train_tensors: dict[int, dict], epochs: int = 100, lr: float = 1e-3,
             checkpoint_path: Path | None = None, checkpoint_every: int = 20,
             seed: int | None = None) -> LSTMBaseline:
@@ -284,6 +312,7 @@ class LSTMBaseline:
         X = torch.tensor(self._inputs(obs_stack), dtype=torch.float32).to(self.device)
         Y = torch.tensor(np.nan_to_num(hor_norm, nan=0.0), dtype=torch.float32).to(self.device)
         Y_mask = torch.tensor(~np.isnan(hor_norm), dtype=torch.float32).to(self.device)
+        A = self._anchor(obs_stack)
 
         if seed is not None:
             # Same initial weights on every run (and for every tuning trial),
@@ -303,7 +332,7 @@ class LSTMBaseline:
         self.model.train()
         for epoch in range(start_epoch, epochs):
             opt.zero_grad()
-            pred = self.model(X)
+            pred = self.model(X, A)
             loss = ((pred - Y) ** 2 * Y_mask).sum() / Y_mask.sum().clamp(min=1)
             loss.backward()
             opt.step()
@@ -315,7 +344,7 @@ class LSTMBaseline:
                                 "epoch": epoch + 1}, tmp)
 
         with torch.no_grad():
-            pred = self.model(X).cpu().numpy()
+            pred = self.model(X, A).cpu().numpy()
         residuals = (hor_norm - pred) * self._norm_std  # back to original units
         self.residual_std = np.nanstd(residuals, axis=(0, 1))
         self.residual_std[np.isnan(self.residual_std) | (self.residual_std == 0)] = 1.0
@@ -326,7 +355,7 @@ class LSTMBaseline:
     def predict(self, obs: np.ndarray) -> dict:
         x = torch.tensor(self._inputs(obs[None, :, :]), dtype=torch.float32).to(self.device)
         with torch.no_grad():
-            pred_norm = self.model(x).cpu().numpy()[0]
+            pred_norm = self.model(x, self._anchor(obs[None, :, :])).cpu().numpy()[0]
         pred = pred_norm * self._norm_std + self._norm_mean
         halfwidths = self.residual_std * 1.645
         return {"forecast_array": pred, "halfwidth_array": halfwidths}
@@ -351,7 +380,7 @@ class LSTMBaseline:
             for start in range(0, n, batch_size):
                 end = min(start + batch_size, n)
                 x = torch.tensor(obs_norm[start:end], dtype=torch.float32).to(self.device)
-                pred_norm = self.model(x).cpu().numpy()
+                pred_norm = self.model(x, self._anchor(obs_stack[start:end])).cpu().numpy()
                 forecasts[start:end] = pred_norm * self._norm_std + self._norm_mean
         halfwidths = np.tile(self.residual_std * 1.645, (n, 1))
         return {"forecast_array": forecasts, "halfwidth_array": halfwidths}
