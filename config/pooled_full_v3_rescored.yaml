@@ -1,0 +1,63 @@
+# =============================================================================
+# config/pooled_full_v3.yaml's three samples, with the LLM conditions'
+# post-processing refitted by src/rescore_postprocess.py --strategy
+# vitals_labs --grid extended (one drift damping / level-anchor weight for
+# the vital signs and one for the labs, fitted on each run's calibration
+# patients; no new LLM calls), as the brief's step 6 asks:
+#   python src/rescore_postprocess.py tuned_configs/<run>/config_alliance_full_v3_s4X_tuned.yaml --strategy vitals_labs --grid extended
+#   python src/pool_runs.py config/pooled_full_v3_rescored.yaml --root $DT_RESULTS_DIR --json <file>
+# The LSTM is replaced by the re-trained lstm_target delta LSTM
+# (src/lstm_variants.py, chosen over level and delta_e400 on the validation
+# patients of all three samples: val sMAPE 0.1167 / 0.1180 / 0.1201 vs
+# level 0.135-0.138). Other baselines unchanged (they are not
+# post-processed); the ensemble is rebuilt from its members.
+# =============================================================================
+samples:
+  - name: s43                        # nibi_full_oct13
+    results_dir: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned
+    overrides:
+      single_model_llm: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline_no_similarity: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned/rescored_vitals_labs_extended
+      single_model_llm@llama3_70b: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline@llama3_70b: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned/rescored_vitals_labs_extended
+      lstm: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned/lstm_variants/delta
+  - name: s44                        # ror_full_oct13
+    results_dir: mimic-iv-twin-work-full/ror_full_oct13/results_tuned
+    overrides:
+      single_model_llm: mimic-iv-twin-work-full/ror_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline: mimic-iv-twin-work-full/ror_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline_no_similarity: mimic-iv-twin-work-full/ror_full_oct13/results_tuned/rescored_vitals_labs_extended
+      single_model_llm@llama3_70b: mimic-iv-twin-work-full/ror_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline@llama3_70b: mimic-iv-twin-work-full/ror_full_oct13/results_tuned/rescored_vitals_labs_extended
+      lstm: mimic-iv-twin-work-full/ror_full_oct13/results_tuned/lstm_variants/delta
+  - name: s45                        # tri_full_oct13
+    results_dir: mimic-iv-twin-work-full/tri_full_oct13/results_tuned
+    overrides:
+      single_model_llm: mimic-iv-twin-work-full/tri_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline: mimic-iv-twin-work-full/tri_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline_no_similarity: mimic-iv-twin-work-full/tri_full_oct13/results_tuned/rescored_vitals_labs_extended
+      single_model_llm@llama3_70b: mimic-iv-twin-work-full/tri_full_oct13/results_tuned/rescored_vitals_labs_extended
+      full_pipeline@llama3_70b: mimic-iv-twin-work-full/tri_full_oct13/results_tuned/rescored_vitals_labs_extended
+      lstm: mimic-iv-twin-work-full/tri_full_oct13/results_tuned/lstm_variants/delta
+
+# [A, B]: A - B per-patient sMAPE. RQ1 is the pre-specified comparison; the
+# subgroup tests are exploratory (as in config/pooled_lean.yaml).
+comparisons:
+  - [full_pipeline, single_model_llm]          # RQ1
+  - [full_pipeline, recent_mean]
+  - [full_pipeline, gbm]
+  - [full_pipeline, persistence_blend]
+  - [full_pipeline, naive]
+  - [full_pipeline, lstm]
+  - [full_pipeline+lstm, full_pipeline]
+  - [full_pipeline+lstm, lstm]
+  - [lstm, naive]
+  - [lstm, gbm]
+  - [full_pipeline, full_pipeline_no_similarity]   # what the similarity agent adds
+  - [full_pipeline, full_pipeline@llama3_70b]      # Med42 vs its base model
+  - [full_pipeline@llama3_70b, single_model_llm@llama3_70b]   # RQ1 with Llama
+
+bootstrap_resamples: 2000
+bootstrap_alpha: 0.05
+seed: 42

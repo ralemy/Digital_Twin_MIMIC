@@ -1,0 +1,41 @@
+# =============================================================================
+# The full_v3 claims over the three independent full-scope samples (19
+# variables), read by src/pool_runs.py (no GPU):
+#   python src/pool_runs.py config/pooled_full_v3.yaml --root $DT_RESULTS_DIR --json <file>
+# Each run's work dir is at $DT_RESULTS_DIR/mimic-iv-twin-work-full/<run>/
+# (as run_all.sh leaves it, or untarred from <run>_results.tar). The three
+# runs: nibi_full_oct13 (cohort seed 43), ror_full_oct13 (44) and
+# tri_full_oct13 (45; its last run job finished on Nibi), configs
+# config/config_alliance_full_v3_s4{3,4,5}.yaml.
+#
+# As run: every sample scored as its own run scored it (post-processing and
+# interval factors fitted on its own calibration patients). The LSTM is the
+# runs' own (lstm_target level), weak at this scope; see
+# config/pooled_full_v3_rescored.yaml for the vitals/labs post-processing and
+# the re-trained LSTM.
+# =============================================================================
+samples:
+  - name: s43                        # nibi_full_oct13
+    results_dir: mimic-iv-twin-work-full/nibi_full_oct13/results_tuned
+  - name: s44                        # ror_full_oct13
+    results_dir: mimic-iv-twin-work-full/ror_full_oct13/results_tuned
+  - name: s45                        # tri_full_oct13
+    results_dir: mimic-iv-twin-work-full/tri_full_oct13/results_tuned
+
+# [A, B]: A - B per-patient sMAPE. RQ1 is the pre-specified comparison; the
+# subgroup tests are exploratory (as in config/pooled_lean.yaml).
+comparisons:
+  - [full_pipeline, single_model_llm]          # RQ1
+  - [full_pipeline, recent_mean]
+  - [full_pipeline, gbm]
+  - [full_pipeline, persistence_blend]
+  - [full_pipeline, naive]
+  - [full_pipeline, lstm]
+  - [full_pipeline+lstm, full_pipeline]
+  - [full_pipeline, full_pipeline_no_similarity]   # what the similarity agent adds
+  - [full_pipeline, full_pipeline@llama3_70b]      # Med42 vs its base model
+  - [full_pipeline@llama3_70b, single_model_llm@llama3_70b]   # RQ1 with Llama
+
+bootstrap_resamples: 2000
+bootstrap_alpha: 0.05
+seed: 42

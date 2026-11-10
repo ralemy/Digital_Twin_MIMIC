@@ -1,0 +1,103 @@
+# =============================================================================
+# Hyperparameter search grid for src/tune.py (jobs/step3b_tune.sh).
+#
+# Sequential (coordinate) search: rounds run in order; each evaluates the
+# current best settings ("incumbent") and every trial below (incumbent +
+# the trial's overrides) on the round's conditions, scored on the TUNING
+# subset of the validation split. A trial replaces the incumbent only if it
+# lowers the mean per-patient sMAPE by at least min_improvement with every
+# condition's LLM fallback rate <= max_fallback_rate. The test split is
+# never used.
+#
+# Keys are dotted paths into the experiment config (e.g.
+# similarity_agent.k_neighbors). The tuned settings apply to every model,
+# including the llm.variants used in the model comparison.
+#
+# Cost (lean, 128 patients = 4 batches), measured on Trillium: 9.7 min per
+# LLM evaluation with Qwen2.5-32B (tri_lean_exp2: 26 evaluations, 4.3 h),
+# ~15 min with Med42-70B, the primary model since then (its conditions run
+# ~1.55x slower). GBM/LSTM trials take about a minute. Settings already
+# evaluated (e.g. the incumbent of an earlier round) are cached and cost
+# nothing. This grid is 20 LLM evaluations, ~5.5 GPU-hours from scratch
+# (lean); the full scope's 19-variable answers take ~3.7x longer.
+# =============================================================================
+tuning:
+  n_tune_patients: 128        # validation stays used for tuning; the rest (322) are kept for calibrate.py
+  seed: 42                    # fixes the tuning/calibration split
+  max_fallback_rate: 0.10     # a setting with more naive fallbacks than this can't win
+  min_improvement: 0.002      # sMAPE (fraction) a trial must gain to replace the incumbent
+
+  # Applied to every trial (not tuned). Seeding the LSTM makes its trials
+  # comparable, without initialisation noise.
+  fixed:
+    baselines.lstm_seed: 42
+
+  rounds:
+    # --- conventional baselines (CPU-scale; tuned so the comparison is fair) ---
+    - name: gbm
+      conditions: [gbm]
+      trials:
+        depth3: {baselines.gbm_max_depth: 3}
+        depth6: {baselines.gbm_max_depth: 6}
+        iter300_lr005: {baselines.gbm_max_iter: 300, baselines.gbm_learning_rate: 0.05}
+    - name: lstm
+      conditions: [lstm]
+      trials:
+        hidden64: {baselines.lstm_hidden_size: 64}
+        hidden256: {baselines.lstm_hidden_size: 256}
+        epochs400: {baselines.lstm_epochs: 400}
+        lr3e-3: {baselines.lstm_learning_rate: 0.003}
+
+    # --- the multi-agent pipeline ----------------------------------------------
+    - name: similarity_context        # what the forecaster is told about similar patients
+      conditions: [full_pipeline]
+      trials:
+        trajectory: {forecasting_agent.similarity_context: trajectory}
+    - name: k_neighbors
+      conditions: [full_pipeline]
+      trials:
+        k10: {similarity_agent.k_neighbors: 10}
+        k50: {similarity_agent.k_neighbors: 50}
+
+    # --- trends and anchors (affect every LLM condition, so both are scored) ---
+    # per_condition: each condition gets its own winner, for its prompt group
+    # (single_model_llm, or every full_pipeline* condition). fir_full_v2,
+    # scored jointly: no_slope helped the single model (0.123 -> 0.110) and
+    # hurt the pipeline (0.112 -> 0.118), and won for both.
+    # On Trillium the single-model forecasts continued trend_slope ~1:1 for
+    # 24 h, while the patients reverted toward their mean.
+    - name: trend_hint
+      conditions: [single_model_llm, full_pipeline]
+      per_condition: true
+      trials:
+        no_slope: {forecasting_agent.trend_hint: none}
+        damped_note: {forecasting_agent.trend_hint: damped}
+    # drift_damping (and level_anchor_weight) are not tuned here any more:
+    # they only post-process the forecast, so calibrate.py fits them per
+    # condition from the saved forecasts with no LLM calls
+    # (forecasting_agent.fit_postprocess). tri_lean_exp2 tuned drift_damping
+    # here: 0.5 / 0.25 / 0 scored within 0.002; the configs start from 0.25.
+    - name: cohort_anchor             # the training cohort's median [IQR] in the prompt
+      conditions: [single_model_llm, full_pipeline]
+      per_condition: true
+      trials:
+        anchor: {forecasting_agent.cohort_anchor: true}
+
+    # --- prompt and decoding (affect every LLM condition, so both are scored) --
+    - name: prompt
+      conditions: [single_model_llm, full_pipeline]
+      per_condition: true
+      trials:
+        strict_length: {forecasting_agent.strict_length: true}
+        recent6h: {forecasting_agent.recent_hours: 6}
+        strict_recent6h: {forecasting_agent.strict_length: true, forecasting_agent.recent_hours: 6}
+    - name: temperature
+      conditions: [single_model_llm, full_pipeline]
+      trials:
+        t0: {llm.temperature: 0.0}
+
+    # --- critic ----------------------------------------------------------------
+    - name: critic
+      conditions: [full_pipeline]
+      trials:
+        attempts2: {critic_agent.max_correction_attempts: 2}

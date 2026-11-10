@@ -1,0 +1,57 @@
+# =============================================================================
+# The pipeline-vs-LSTM and ensemble comparisons of config/pooled_lean.yaml,
+# repeated for LSTMs trained with five seeds (src/lstm_seeds.py, written to
+# each run's results_tuned/lstm_seeds/). Every run trained its LSTM with seed
+# 42 only; this shows how much the comparisons depend on that one seed.
+# Read by src/pool_runs.py, laid out as for config/pooled_lean.yaml:
+#   python src/pool_runs.py config/pooled_lean_lstm_seeds.yaml --root <dir> --json <dir>/pooled_lean_lstm_seeds.json
+# Seed 42 is re-trained too (GPU training need not reproduce the run's own
+# LSTM exactly), so all five are trained the same way. Each ensemble is
+# rebuilt from the pipeline and that seed's LSTM.
+# =============================================================================
+samples:
+  - name: s42                        # tri_lean_exp3.4 (LSTMs: tri_lean_exp3.4_lstm, same patients)
+    results_dir: tri_lean_exp3.4/mimic-iv-twin-work/results_tuned
+    overrides:
+      lstm_seed42: tri_lean_exp3.4_lstm/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed43: tri_lean_exp3.4_lstm/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed44: tri_lean_exp3.4_lstm/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed45: tri_lean_exp3.4_lstm/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed46: tri_lean_exp3.4_lstm/mimic-iv-twin-work/results_tuned/lstm_seeds
+  - name: s43                        # tri_lean_exp4
+    results_dir: tri_lean_exp4/mimic-iv-twin-work/results_tuned
+    overrides:
+      lstm_seed42: tri_lean_exp4/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed43: tri_lean_exp4/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed44: tri_lean_exp4/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed45: tri_lean_exp4/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed46: tri_lean_exp4/mimic-iv-twin-work/results_tuned/lstm_seeds
+  - name: s44                        # ror_lean_exp5
+    results_dir: ror_lean_exp5/mimic-iv-twin-work/results_tuned
+    overrides:
+      lstm_seed42: ror_lean_exp5/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed43: ror_lean_exp5/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed44: ror_lean_exp5/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed45: ror_lean_exp5/mimic-iv-twin-work/results_tuned/lstm_seeds
+      lstm_seed46: ror_lean_exp5/mimic-iv-twin-work/results_tuned/lstm_seeds
+
+comparisons:
+  - [full_pipeline, lstm_seed42]
+  - [full_pipeline+lstm_seed42, lstm_seed42]
+  - [full_pipeline+lstm_seed42, full_pipeline]
+  - [full_pipeline, lstm_seed43]
+  - [full_pipeline+lstm_seed43, lstm_seed43]
+  - [full_pipeline+lstm_seed43, full_pipeline]
+  - [full_pipeline, lstm_seed44]
+  - [full_pipeline+lstm_seed44, lstm_seed44]
+  - [full_pipeline+lstm_seed44, full_pipeline]
+  - [full_pipeline, lstm_seed45]
+  - [full_pipeline+lstm_seed45, lstm_seed45]
+  - [full_pipeline+lstm_seed45, full_pipeline]
+  - [full_pipeline, lstm_seed46]
+  - [full_pipeline+lstm_seed46, lstm_seed46]
+  - [full_pipeline+lstm_seed46, full_pipeline]
+
+bootstrap_resamples: 2000
+bootstrap_alpha: 0.05
+seed: 42

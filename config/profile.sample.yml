@@ -1,0 +1,119 @@
+# =============================================================================
+# YOUR PROFILE — a TEMPLATE. Copy it once per cluster (Alliance clusters don't
+# share home directories), fill it in, and keep it private:
+#
+#   cp config/profile.sample.yml ~/.config/dt_profile.yml
+#   chmod 600 ~/.config/dt_profile.yml      # required: it holds your PhysioNet password
+#   nano ~/.config/dt_profile.yml           # or any editor
+#   bash jobs/setup_bash.sh                 # symlinks, Ollama, .venv, ~/.bashrc (README, section 2)
+#   source ~/.bashrc
+#
+# This is the only file you edit to set the project up: jobs/setup_bash.sh
+# reads it, sets every location (DT_MIMIC_DIR, DT_RESULTS_DIR, ...) and the
+# Slurm account, creates the repo's mimic-iv and ollama-models symlinks,
+# installs Ollama and writes the final values into ~/.bashrc. Nothing in
+# jobs/, config/ or src/ needs changing. After changing this file, redo the
+# setup: rm setup.lock && bash jobs/setup_bash.sh && source ~/.bashrc
+#
+# Paths must be absolute; ~ and environment variables ($HOME, $SCRATCH, $USER,
+# and $DT_REPO — where this repo is cloned) are expanded when it is read.
+#
+# Keep your copy private: never commit it, never put it in the repo or in
+# /project (shared with the group). Every job refuses a profile that others
+# can read (fix with chmod 600). Jobs read ~/.config/dt_profile.yml; to use
+# another file, pass --profile <file> among a job's arguments (or set
+# DT_PROFILE=<file> before sourcing jobs/setup_bash.sh).
+# =============================================================================
+
+slurm:
+  # Your allocation's account, e.g. def-yourpi. `sshare -U -u $USER` lists
+  # yours; use the def-... one (GPU jobs are charged to its _gpu counterpart
+  # automatically). Exported as SBATCH_ACCOUNT, so sbatch/salloc use it.
+  account: ""
+
+  # true where every job must take a GPU and may not ask for memory — the
+  # GPU subcluster of Trillium (submit from its GPU login node, trig-login01).
+  # jobs/submit.sh (used by jobs/run_all.sh) then asks for one GPU per job
+  # and drops --mem. Leave empty for the cluster's default: true on Trillium,
+  # false elsewhere.
+  gpu_jobs_only:
+
+  # Job resources per cluster, so no job script needs editing. Empty = the
+  # job script's own #SBATCH value. Each can be overridden for one command
+  # by an environment variable (in brackets), e.g.
+  #   DT_GPU_JOB_MEM=192000M bash jobs/run_all.sh ...
+  # Not used with gpu_jobs_only (except extra_sbatch_options).
+  gpu:                    # [DT_GPU] --gpus-per-node of the GPU jobs, e.g. h100:1 (scripts: h100:1)
+  gpu_job_mem:            # [DT_GPU_JOB_MEM] --mem of the GPU jobs, e.g. 192000M (scripts: 128000M)
+  gpu_job_cpus:           # [DT_GPU_JOB_CPUS] --cpus-per-task of the GPU jobs (scripts: 12)
+  extra_sbatch_options:   # [DT_SBATCH_EXTRA] added to every job, e.g. "--partition=... --qos=..."
+  max_job_hours:          # [DT_MAX_JOB_HOURS] longest job run_all.sh submits (default 8);
+                          # longer stages run as a chain of jobs resuming from checkpoints
+  kill_on_invalid_dep:    # [DT_KILL_ON_INVALID_DEP] run_all.sh's --kill-on-invalid-dep
+                          # (default: false on Trillium, whose sbatch rejects it; else true)
+
+paths:
+  # Where the MIMIC-IV files (hosp/, icu/) are downloaded — ~10 GB. Project
+  # space is backed up and not purged; only credentialed people may be able to
+  # read it (README, "Before you start", item 3). The repo's mimic-iv symlink
+  # points here. Example: ~/projects/def-yourpi/mimic-iv/3.1
+  mimic_dir: ""
+
+  # Where results are recorded: <results_dir>/mimic-iv-twin-work (lean) and
+  # <results_dir>/mimic-iv-twin-work-full (full). Same access rules as the
+  # data. Example: ~/projects/def-yourpi/dt-results
+  # On Trillium, compute nodes can't write /project or $HOME: use $SCRATCH
+  # (e.g. $SCRATCH/dt-results) and copy finished results to /project.
+  results_dir: ""
+
+  # Where job .out files and Ollama logs go. Leave empty for $DT_REPO/logs;
+  # on Trillium it must be on $SCRATCH, e.g. $SCRATCH/dt-logs.
+  logs_dir: ""
+
+  # Where the Ollama models are downloaded — ~190 GB for all six. Scratch has
+  # room but is purged after a period of inactivity (re-run prep2 if models
+  # go missing). The repo's ollama-models symlink points here.
+  # Example: $SCRATCH/ollama-local/models
+  ollama_models: ""
+
+  # Where Ollama is installed (no root needed; ~2 GB): the setup unpacks it
+  # into the parent of this directory, which must end in /bin.
+  ollama_bin: ~/ollama-local/bin
+
+environment:
+  # Modules every job loads before activating .venv. Leave empty for the
+  # default on Alliance clusters, "StdEnv/2023 python/3.11". Adding
+  # "gcc arrow/25.0.0" gives pandas pyarrow — not between runs of one
+  # experiment: string columns then read as `str`, not `object`.
+  modules: ""
+
+  # The Ollama release the setup installs. Leave empty for 0.34.4, the
+  # version this project was run with.
+  ollama_version: ""
+
+  # Weights & Biases sends aggregate metrics (no patient-level data) to an
+  # external service. true (the default) keeps it off whatever the configs
+  # say; set false only if your ethics approval and data governance allow it.
+  disable_wandb: true
+
+  # Whether this cluster's compute (worker) nodes can reach the internet:
+  # false on Rorqual and Trillium (see the cluster's Alliance
+  # wiki page). Leave empty for the default: false on Rorqual and Trillium,
+  # else true.
+  # With false, the downloads (MIMIC-IV with prep1, the Ollama models with
+  # prep2) run on a login node instead of as Slurm jobs — jobs/run_all.sh does
+  # that by itself; run prep1/prep2 by hand with bash (README, section 4).
+  workers_have_internet:
+
+  # Whether compute nodes can write the repo, $HOME and /project. Leave empty
+  # for the default: false on Trillium, true elsewhere. With false the setup
+  # requires results_dir and logs_dir outside them, and makes the tuned
+  # configs (config/<config>_tuned.yaml) symlinks into results_dir.
+  workers_can_write_repo:
+
+physionet:
+  # Your PhysioNet account, credentialed for MIMIC-IV — used only by
+  # jobs/prep1_download_mimic.sh. The password never leaves this file
+  # except into a private, temporary wgetrc inside the download job.
+  username: ""
+  password: ""

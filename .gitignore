@@ -1,0 +1,39 @@
+__pycache__/
+*.pyc
+.venv/
+*.npz
+*.log
+*.out
+# Links (or directories) created by jobs/setup_bash.sh — no trailing slash,
+# so the patterns also match symlinks
+/mimic-iv
+/mimic-iv-twin-work
+/mimic-iv-twin-work-full
+/ollama-models
+*.tar
+# jobs/setup_bash.sh's log and lock
+/setup.lock
+/setup-failed-*.log
+# Personal job profiles hold credentials — keep them in ~/.config, never in the repo
+*profile*.yml
+!config/profile.sample.yml
+
+# Generated configs — never commit a config a script writes: it belongs to the
+# run and cluster that wrote it. Tuned configs are written by each cluster's
+# own tune job (src/tune.py; select_rq_model.py --write-config edits them); on
+# Trillium a symlink into $DT_RESULTS_DIR/tuned-configs. One cluster's copy in
+# git replaced another's tuned settings (Trillium calibrate, CheckpointMismatch).
+# Only hand-edited configs (config_alliance_*.yaml, tuning_grid.yaml,
+# profile.sample.yml, ...) are tracked.
+config/*_tuned.yaml
+# jobs/run_all.sh's per-run configs (a link to $DT_RESULTS_DIR/tuned-configs on Trillium)
+/tuned_configs
+
+# jobs/run_all.sh state and logs
+run_all/
+
+# Job output: Slurm .out files and Ollama logs (the directory itself is kept)
+/logs/*
+!/logs/.gitkeep
+
+/multi_runs/
